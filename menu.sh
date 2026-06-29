@@ -5201,8 +5201,6 @@ refresh_banner_cache() {
     local parts=()
     ((w)) && parts+=("($w)wks")
     ((d)) && parts+=("($d)days")
-    ((h)) && parts+=("($h)hr")
-    ((m)) && parts+=("($m)min")
     local IFS=,
     BANNER_CACHE_UP_TIME="${parts[*]}"
     BANNER_CACHE_RAM_USAGE=$(free -m | awk '/^Mem:/{if($2>0){printf "%.2f", $3*100/$2}else{print "0.00"}}')
@@ -5215,7 +5213,8 @@ refresh_banner_cache() {
     fi
     BANNER_CACHE_CPU_COUNT=$(nproc 2>/dev/null || echo "1")
     if [[ -z "$BANNER_CACHE_DOMAIN" ]]; then
-        BANNER_CACHE_DOMAIN=$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo "unknown")
+        BANNER_CACHE_DOMAIN=$(dig +short -x "$BANNER_CACHE_IP" 2>/dev/null | sed 's/\.$//' || true)
+        BANNER_CACHE_DOMAIN="${BANNER_CACHE_DOMAIN:-$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo "unknown")}"
     fi
     if [[ -s "$DB_FILE" ]]; then
         BANNER_CACHE_TOTAL_USERS=0
