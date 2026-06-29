@@ -1944,7 +1944,7 @@ create_user() {
     # Only relevant when udp-custom is installed: ask the port range to advertise
     # in the UDP-Custom connection string (IP:range@user:pass).
     local udp_port_range=""
-    if systemctl is-active --quiet udp-custom; then
+    if [[ "$app" == "http" ]] && systemctl is-active --quiet udp-custom; then
         read -p "🚀 Enter UDP-Custom port range [1000-5000]: " udp_port_range
         udp_port_range=${udp_port_range:-1000-5000}
     fi
