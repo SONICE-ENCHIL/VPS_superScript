@@ -449,6 +449,77 @@ check_environment() {
     fi
 }
 
+migrate_from_firewallfalcon() {
+    [[ -d /etc/firewallfalcon ]] || return 0
+    echo -e "${C_YELLOW}⚠️ Detected old FirewallFalcon installation. Migrating to Skylartech...${C_RESET}"
+
+    # Stop old services
+    for svc in firewallfalcon-limiter firewallfalcon-bandwidth firewallfalcon-hwid-enforcer; do
+        systemctl stop "$svc" 2>/dev/null || true
+        systemctl disable "$svc" 2>/dev/null || true
+    done
+
+    # Move data directory
+    [[ -d /etc/firewallfalcon ]] && mv /etc/firewallfalcon /etc/skylartech
+
+    # Move backup directory
+    [[ -d /root/firewallfalcon_backups ]] && mv /root/firewallfalcon_backups /root/skylartech_backups
+
+    # Rename scripts
+    for old in /usr/local/bin/firewallfalcon-*.sh; do
+        [[ -f "$old" ]] || continue
+        local new="${old//firewallfalcon-/skylartech-}"
+        mv "$old" "$new"
+    done
+
+    # Rename systemd service files
+    for old in /etc/systemd/system/firewallfalcon-*.service; do
+        [[ -f "$old" ]] || continue
+        local new="${old//firewallfalcon-/skylartech-}"
+        mv "$old" "$new"
+        # Update service file internals referencing old paths
+        sed -i 's|/etc/firewallfalcon|/etc/skylartech|g; s|firewallfalcon-|skylartech-|g; s|FirewallFalcon|Skylartech|g' "$new"
+    done
+
+    # Rename log files
+    for old in /var/log/firewallfalcon_*.log; do
+        [[ -f "$old" ]] || continue
+        local new="${old//firewallfalcon_/skylartech_}"
+        mv "$old" "$new"
+    done
+
+    # Rename sshd config drop-in
+    [[ -f /etc/ssh/sshd_config.d/firewallfalcon.conf ]] && mv /etc/ssh/sshd_config.d/firewallfalcon.conf /etc/ssh/sshd_config.d/skylartech.conf
+
+    # Rename backup marker files
+    local bak_files
+    while IFS= read -r -d '' bak_files; do
+        local dir="${bak_files%/*}"
+        local base="${bak_files##*/}"
+        local new_base="${base//firewallfalcon/skylartech}"
+        [[ "$base" != "$new_base" ]] && mv "$bak_files" "$dir/$new_base"
+    done < <(find /etc /root /usr/local -name '*.bak.firewallfalcon' -print0 2>/dev/null)
+    # Reload systemd and re-enable services
+    systemctl daemon-reload 2>/dev/null || true
+    for svc in skylartech-limiter skylartech-bandwidth skylartech-hwid-enforcer; do
+        if [[ -f "/etc/systemd/system/${svc}.service" ]]; then
+            systemctl enable "$svc" 2>/dev/null || true
+            systemctl start "$svc" 2>/dev/null || true
+        fi
+    done
+
+    # Migrate iptables rules file if it exists
+    [[ -f /etc/iptables/rules.v4 ]] && sed -i 's|/etc/firewallfalcon|/etc/skylartech|g' /etc/iptables/rules.v4 2>/dev/null || true
+
+    # Update any stale banner references in sshd_config
+    sed -i 's|/etc/firewallfalcon|/etc/skylartech|g' /etc/ssh/sshd_config 2>/dev/null || true
+
+    # Remove old empty directory if it still exists
+    rmdir /etc/firewallfalcon 2>/dev/null || true
+
+    echo -e "${C_GREEN}✅ Migration complete.${C_RESET}"
+}
+
 ensure_skylartech_dirs() {
     mkdir -p "$DB_DIR" "$SSL_CERT_DIR" "$BANDWIDTH_DIR" "$TRIAL_EXPIRY_DIR" /etc/ssh/sshd_config.d
     touch "$DB_FILE"
@@ -725,6 +796,7 @@ require_interactive_terminal() {
 }
 
 initial_setup() {
+    migrate_from_firewallfalcon
     echo -e "${C_BLUE}⚙️ Initializing Skylartech Manager setup...${C_RESET}"
     check_environment
     
