@@ -4573,7 +4573,7 @@ EOF
                 ((_import_count++))
             fi
             rm -f "$_tmp" 2>/dev/null
-        done < <(awk -F: '$9 == "zivpn" { print $1, $2 }' "$DB_FILE" 2>/dev/null)
+    done < <(awk -F: '$9 == "zivpn" { print $1":"$2 }' "$DB_FILE" 2>/dev/null)
         if [[ $_import_count -gt 0 ]]; then
             echo -e "${C_GREEN}ℹ️ Imported ${_import_count} existing ZiVPN user(s) from database.${C_RESET}"
         fi
@@ -6790,7 +6790,7 @@ zivpn_resync_passwords() {
             rm -f "$tmp" 2>/dev/null
             ((missing++))
         fi
-    done < <(awk -F: '$9 == "zivpn" { print $1, $2 }' "$DB_FILE" 2>/dev/null)
+    done < <(awk -F: '$9 == "zivpn" { print $1":"$2 }' "$DB_FILE" 2>/dev/null)
 
     if [[ "$added" -gt 0 ]]; then
         systemctl is-active --quiet zivpn 2>/dev/null && systemctl try-restart zivpn.service 2>/dev/null
