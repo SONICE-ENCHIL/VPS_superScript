@@ -6411,10 +6411,10 @@ _nat_apply() {
     done
 
     # Apply DNAT rules
-    local rule proto prange target
+    local rule proto port_low port_high target
     for rule in "${NAT_DNAT[@]}"; do
-        IFS=: read -r proto prange target <<< "$rule"
-        iptables -t nat -A PREROUTING -i "$iface" -p "$proto" --dport "$prange" -j DNAT --to-destination ":${target}" 2>/dev/null || true
+        IFS=: read -r proto port_low port_high target <<< "$rule"
+        iptables -t nat -A PREROUTING -i "$iface" -p "$proto" --dport "${port_low}:${port_high}" -j DNAT --to-destination ":${target}" 2>/dev/null || true
     done
 
     _filter_iptables_save
@@ -6436,10 +6436,10 @@ _nat_preview_commands() {
         echo
     fi
     echo -e "  ${C_YELLOW}# DNAT rules${C_RESET}"
-    local rule proto prange target
+    local rule proto port_low port_high target
     for rule in "${NAT_DNAT[@]}"; do
-        IFS=: read -r proto prange target <<< "$rule"
-        echo "  iptables -t nat -A PREROUTING -i $iface -p $proto --dport $prange -j DNAT --to-destination :${target}"
+        IFS=: read -r proto port_low port_high target <<< "$rule"
+        echo "  iptables -t nat -A PREROUTING -i $iface -p $proto --dport ${port_low}:${port_high} -j DNAT --to-destination :${target}"
     done
 }
 
@@ -6458,11 +6458,11 @@ _nat_show_rules() {
         echo -e "\n  ${C_ACCENT}===== DNAT (port forwarding) =====${C_RESET}"
         for i in "${!NAT_DNAT[@]}"; do
             local rule="${NAT_DNAT[$i]}"
-            local proto prange target label
-            IFS=: read -r proto prange target <<< "$rule"
+            local proto port_low port_high target label
+            IFS=: read -r proto port_low port_high target <<< "$rule"
             label=""
             [[ "$target" == "5667" ]] && label="  (ZiVPN)"
-            printf "  ${C_CHOICE}[D%2s]${C_RESET}  %-4s  %-17s  →  %-5s%s\n" "$((i+1))" "${proto^^}" "$prange" "$target" "$label"
+            printf "  ${C_CHOICE}[D%2s]${C_RESET}  %-4s  %-17s  →  %-5s%s\n" "$((i+1))" "${proto^^}" "${port_low}:${port_high}" "$target" "$label"
         done
     fi
 }
@@ -6562,9 +6562,9 @@ nat_forward_menu() {
                 echo -e "\n${C_BOLD}Select DNAT rule to edit:${C_RESET}\n"
                 for i in "${!NAT_DNAT[@]}"; do
                     local rule="${NAT_DNAT[$i]}"
-                    local p prot range tgt
-                    IFS=: read -r prot range tgt <<< "$rule"
-                    printf "  ${C_CHOICE}[%2s]${C_RESET}  %-4s  %-17s → %s\n" "$((i+1))" "${prot^^}" "$range" "$tgt"
+                    local p prot plow phigh tgt
+                    IFS=: read -r prot plow phigh tgt <<< "$rule"
+                    printf "  ${C_CHOICE}[%2s]${C_RESET}  %-4s  %-17s → %s\n" "$((i+1))" "${prot^^}" "${plow}:${phigh}" "$tgt"
                 done
                 echo -e "\n  ${C_WARN}[ 0]${C_RESET} Cancel"
                 read -p "👉 Choice: " idx
@@ -6573,8 +6573,9 @@ nat_forward_menu() {
                     echo -e "\n${C_RED}❌ Invalid.${C_RESET}"; sleep 1; continue
                 fi
                 local old="${NAT_DNAT[$((idx-1))]}"
-                local oprot orange otarget
-                IFS=: read -r oprot orange otarget <<< "$old"
+                local oprot olow ohigh otarget
+                IFS=: read -r oprot olow ohigh otarget <<< "$old"
+                local orange="${olow}:${ohigh}"
                 echo -e "\n${C_DIM}Editing: $oprot $orange → $otarget${C_RESET}"
                 read -p "👉 Protocol (tcp/udp) [$oprot]: " nproto
                 nproto=${nproto:-$oprot}
@@ -6601,9 +6602,9 @@ nat_forward_menu() {
                 done
                 for i in "${!NAT_DNAT[@]}"; do
                     local rule="${NAT_DNAT[$i]}"
-                    local prot range tgt
-                    IFS=: read -r prot range tgt <<< "$rule"
-                    printf "  ${C_CHOICE}[D%2s]${C_RESET}  DNAT    %-4s %s → %s\n" "$((i+1))" "${prot^^}" "$range" "$tgt"
+                    local prot plow phigh tgt
+                    IFS=: read -r prot plow phigh tgt <<< "$rule"
+                    printf "  ${C_CHOICE}[D%2s]${C_RESET}  DNAT    %-4s %s → %s\n" "$((i+1))" "${prot^^}" "${plow}:${phigh}" "$tgt"
                 done
                 echo -e "\n  ${C_WARN}[ 0]${C_RESET} Cancel"
                 read -p "👉 Enter code (e.g. R1 or D3): " code
