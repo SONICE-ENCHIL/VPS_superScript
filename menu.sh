@@ -49,7 +49,6 @@ DNSTT_SERVICE_FILE="/etc/systemd/system/dnstt.service"
 DNSTT_BINARY="/usr/local/bin/dnstt-server"
 DNSTT_KEYS_DIR="/etc/firewallfalcon/dnstt"
 DNSTT_CONFIG_FILE="$DB_DIR/dnstt_info.conf"
-DNS_INFO_FILE="$DB_DIR/dns_info.conf"
 UDP_CUSTOM_DIR="/root/udp"
 UDP_CUSTOM_SERVICE_FILE="/etc/systemd/system/udp-custom.service"
 UDPGW_BINARY="/usr/local/bin/udpgw"
@@ -1539,117 +1538,6 @@ setup_ssh_login_info() {
 }
 
 
-generate_dns_record() {
-    echo -e "\n${C_BLUE}⚙️ Generating a random domain...${C_RESET}"
-    if ! command -v jq &> /dev/null; then
-        echo -e "${C_YELLOW}⚠️ jq not found, attempting to install...${C_RESET}"
-        ff_pkg_install jq >/dev/null 2>&1 || {
-            echo -e "${C_RED}❌ Failed to install jq. Cannot manage DNS records.${C_RESET}"
-            return 1
-        }
-    fi
-    local SERVER_IPV4
-    SERVER_IPV4=$(curl -s -4 icanhazip.com)
-    if ! _is_valid_ipv4 "$SERVER_IPV4"; then
-        echo -e "\n${C_RED}❌ Error: Could not retrieve a valid public IPv4 address from icanhazip.com.${C_RESET}"
-        echo -e "${C_YELLOW}ℹ️ Please check your server's network connection and DNS resolver settings.${C_RESET}"
-        echo -e "   Output received: '$SERVER_IPV4'"
-        return 1
-    fi
-
-    local SERVER_IPV6
-    SERVER_IPV6=$(curl -s -6 icanhazip.com --max-time 5)
-
-    local RANDOM_SUBDOMAIN="vps-$(tr -dc a-z0-9 < /dev/urandom | head -c 8)"
-    local FULL_DOMAIN="$RANDOM_SUBDOMAIN.$DESEC_DOMAIN"
-    local HAS_IPV6="false"
-
-    local API_DATA
-    API_DATA=$(printf '[{"subname": "%s", "type": "A", "ttl": 3600, "records": ["%s"]}]' "$RANDOM_SUBDOMAIN" "$SERVER_IPV4")
-
-    if [[ -n "$SERVER_IPV6" ]]; then
-        local aaaa_record
-        aaaa_record=$(printf ',{"subname": "%s", "type": "AAAA", "ttl": 3600, "records": ["%s"]}' "$RANDOM_SUBDOMAIN" "$SERVER_IPV6")
-        API_DATA="${API_DATA%?}${aaaa_record}]"
-        HAS_IPV6="true"
-    fi
-
-    local CREATE_RESPONSE
-    CREATE_RESPONSE=$(curl -s -w "%{http_code}" -X POST "https://desec.io/api/v1/domains/$DESEC_DOMAIN/rrsets/" \
-        -H "Authorization: Token $DESEC_TOKEN" -H "Content-Type: application/json" \
-        --data "$API_DATA")
-    
-    local HTTP_CODE=${CREATE_RESPONSE: -3}
-    local RESPONSE_BODY=${CREATE_RESPONSE:0:${#CREATE_RESPONSE}-3}
-
-    if [[ "$HTTP_CODE" -ne 201 ]]; then
-        echo -e "${C_RED}❌ Failed to create DNS records. API returned HTTP $HTTP_CODE.${C_RESET}"
-        if ! echo "$RESPONSE_BODY" | jq . > /dev/null 2>&1; then
-            echo "Raw Response: $RESPONSE_BODY"
-        else
-            echo "Response: $RESPONSE_BODY" | jq
-        fi
-        return 1
-    fi
-    
-    cat > "$DNS_INFO_FILE" <<-EOF
-SUBDOMAIN="$RANDOM_SUBDOMAIN"
-FULL_DOMAIN="$FULL_DOMAIN"
-HAS_IPV6="$HAS_IPV6"
-EOF
-    echo -e "\n${C_GREEN}✅ Successfully created domain: ${C_YELLOW}$FULL_DOMAIN${C_RESET}"
-}
-
-delete_dns_record() {
-    if [ ! -f "$DNS_INFO_FILE" ]; then
-        echo -e "\n${C_YELLOW}ℹ️ No domain to delete.${C_RESET}"
-        return
-    fi
-    echo -e "\n${C_BLUE}🗑️ Deleting DNS records...${C_RESET}"
-    source "$DNS_INFO_FILE"
-    if [[ -z "$SUBDOMAIN" ]]; then
-        echo -e "${C_RED}❌ Could not read record details from config file. Skipping deletion.${C_RESET}"
-        return
-    fi
-
-    curl -s -X DELETE "https://desec.io/api/v1/domains/$DESEC_DOMAIN/rrsets/$SUBDOMAIN/A/" \
-         -H "Authorization: Token $DESEC_TOKEN" > /dev/null
-
-    if [[ "$HAS_IPV6" == "true" ]]; then
-        curl -s -X DELETE "https://desec.io/api/v1/domains/$DESEC_DOMAIN/rrsets/$SUBDOMAIN/AAAA/" \
-             -H "Authorization: Token $DESEC_TOKEN" > /dev/null
-    fi
-
-    echo -e "\n${C_GREEN}✅ Deleted domain: ${C_YELLOW}$FULL_DOMAIN${C_RESET}"
-    rm -f "$DNS_INFO_FILE"
-}
-
-dns_menu() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🌐 DNS Domain Management ---${C_RESET}"
-    if [ -f "$DNS_INFO_FILE" ]; then
-        source "$DNS_INFO_FILE"
-        echo -e "\nℹ️ A domain already exists for this server:"
-        echo -e "  - ${C_CYAN}Domain:${C_RESET} ${C_YELLOW}$FULL_DOMAIN${C_RESET}"
-        echo
-        read -p "👉 Do you want to DELETE this domain? (y/n): " choice
-        if [[ "$choice" == "y" || "$choice" == "Y" ]]; then
-            delete_dns_record
-        else
-            echo -e "\n${C_YELLOW}❌ Action cancelled.${C_RESET}"
-        fi
-    else
-        echo -e "\nℹ️ No domain has been generated for this server yet."
-        echo
-        read -p "👉 Do you want to generate a new random domain now? (y/n): " choice
-        if [[ "$choice" == "y" || "$choice" == "Y" ]]; then
-            generate_dns_record
-        else
-            echo -e "\n${C_YELLOW}❌ Action cancelled.${C_RESET}"
-        fi
-    fi
-}
-
 _select_user_interface() {
     local title="$1"
     clear; show_banner
@@ -2896,9 +2784,6 @@ restore_user_data() {
     if [ -d "$temp_dir/firewallfalcon/dnstt" ]; then
         cp -r "$temp_dir/firewallfalcon/dnstt" "$DB_DIR/"
     fi
-    if [ -f "$temp_dir/firewallfalcon/dns_info.conf" ]; then
-        cp "$temp_dir/firewallfalcon/dns_info.conf" "$DB_DIR/"
-    fi
     if [ -f "$temp_dir/firewallfalcon/dnstt_info.conf" ]; then
         cp "$temp_dir/firewallfalcon/dnstt_info.conf" "$DB_DIR/"
     fi
@@ -3351,9 +3236,6 @@ detect_preferred_host() {
     load_edge_cert_info
     if [[ -n "$EDGE_DOMAIN" ]]; then
         host_domain="$EDGE_DOMAIN"
-    fi
-    if [[ -z "$host_domain" && -f "$DNS_INFO_FILE" ]]; then
-        host_domain=$(grep 'FULL_DOMAIN' "$DNS_INFO_FILE" | cut -d'"' -f2)
     fi
     if [[ -z "$host_domain" && -f "$NGINX_CONFIG_FILE" ]]; then
         local nginx_domain
@@ -5456,7 +5338,6 @@ uninstall_script() {
     systemctl disable firewallfalcon-hwid-enforcer &>/dev/null
     rm -f "$HWID_ENFORCER_SERVICE" "$HWID_ENFORCER_SCRIPT"
     _hwid_flush_drops
-    delete_dns_record
     
     echo -e "\n${C_BLUE}🔄 Reloading systemd daemon...${C_RESET}"
     systemctl daemon-reload
@@ -6658,9 +6539,9 @@ main_menu() {
         echo -e "   ${C_TITLE}─────────────────────────────────────────────────────${C_RESET}"
         echo -e "   ${C_TITLE}              ⚙️ SYSTEM SETTINGS               ${C_RESET}"
         echo -e "   ${C_TITLE}─────────────────────────────────────────────────────${C_RESET}"
-        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-26s\033[38G${C_CHOICE}[%2s]${C_RESET}\033[43G%-26s\033[K\n" "15" "🌐 Free Domain" "18" "💾 Backup Users"
-        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-26s\033[38G${C_CHOICE}[%2s]${C_RESET}\033[43G%-26s\033[K\n" "16" "🎨 SSH Banner" "19" "📥 Restore Users"
-        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-26s\033[38G${C_CHOICE}[%2s]${C_RESET}\033[43G%-26s\033[K\n" "17" "🔄 Auto-Reboot Task" "20" "🧹 Cleanup Expired"
+        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-26s\033[38G${C_CHOICE}[%2s]${C_RESET}\033[43G%-26s\033[K\n" "15" "🎨 SSH Banner" "18" "💾 Backup Users"
+        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-26s\033[38G${C_CHOICE}[%2s]${C_RESET}\033[43G%-26s\033[K\n" "16" "🔄 Auto-Reboot Task" "19" "📥 Restore Users"
+        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-26s\033[K\n" "20" "🧹 Cleanup Expired"
         printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-26s\033[K\n" "21" "🔥 NAT Port Forwarding"
 
         echo
@@ -6690,9 +6571,8 @@ main_menu() {
             13) traffic_monitor_menu ;;
             14) content_filter_menu ;;
             
-            15) dns_menu; press_enter ;;
-            16) ssh_banner_menu ;;
-            17) auto_reboot_menu ;;
+            15) ssh_banner_menu ;;
+            16) auto_reboot_menu ;;
             18) backup_user_data; press_enter ;;
             19) restore_user_data; press_enter ;;
             20) cleanup_expired; press_enter ;;
