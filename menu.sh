@@ -1073,16 +1073,21 @@ ff_zivpn_lock_user() {
 
 ff_zivpn_unlock_user() {
     local user="$1" pass marker="$ZIVPN_LOCK_DIR/${user}"
-    [[ -f "$marker" ]] || return 1
-    pass=$(cat "$marker" 2>/dev/null)
-    rm -f "$marker" 2>/dev/null
-    [[ -n "$pass" ]] || return 1
     [[ -f "$ZIVPN_CONFIG_FILE" ]] || return 1
     command -v jq &>/dev/null || return 1
-    jq -e --arg p "$pass" '.auth.config | index($p) != null' "$ZIVPN_CONFIG_FILE" &>/dev/null && return 1
+    # Prefer the marker lock wrote; fall back to the DB password so a ZiVPN
+    # account is never left unable to reconnect if the marker was lost.
+    pass=$(cat "$marker" 2>/dev/null)
+    [[ -n "$pass" ]] || pass=$(awk -F: -v u="$user" '$1==u{print $2; exit}' "$DB_FILE" 2>/dev/null)
+    [[ -n "$pass" ]] || { rm -f "$marker" 2>/dev/null; return 1; }
+    # Already present: just clear the marker.
+    if jq -e --arg p "$pass" '.auth.config | index($p) != null' "$ZIVPN_CONFIG_FILE" &>/dev/null; then
+        rm -f "$marker" 2>/dev/null; return 1
+    fi
     local tmp; tmp=$(mktemp) || return 1
     if jq --arg p "$pass" '.auth.config += [$p]' "$ZIVPN_CONFIG_FILE" > "$tmp" 2>/dev/null; then
         mv "$tmp" "$ZIVPN_CONFIG_FILE"
+        rm -f "$marker" 2>/dev/null
         systemctl is-active --quiet zivpn 2>/dev/null && systemctl try-restart zivpn.service 2>/dev/null
         return 0
     fi
@@ -1454,16 +1459,21 @@ ff_zivpn_lock_user() {
 
 ff_zivpn_unlock_user() {
     local user="$1" pass marker="$ZIVPN_LOCK_DIR/${user}"
-    [[ -f "$marker" ]] || return 1
-    pass=$(cat "$marker" 2>/dev/null)
-    rm -f "$marker" 2>/dev/null
-    [[ -n "$pass" ]] || return 1
     [[ -f "$ZIVPN_CONFIG_FILE" ]] || return 1
     command -v jq &>/dev/null || return 1
-    jq -e --arg p "$pass" '.auth.config | index($p) != null' "$ZIVPN_CONFIG_FILE" &>/dev/null && return 1
+    # Prefer the marker lock wrote; fall back to the DB password so a ZiVPN
+    # account is never left unable to reconnect if the marker was lost.
+    pass=$(cat "$marker" 2>/dev/null)
+    [[ -n "$pass" ]] || pass=$(awk -F: -v u="$user" '$1==u{print $2; exit}' "$DB_FILE" 2>/dev/null)
+    [[ -n "$pass" ]] || { rm -f "$marker" 2>/dev/null; return 1; }
+    # Already present: just clear the marker.
+    if jq -e --arg p "$pass" '.auth.config | index($p) != null' "$ZIVPN_CONFIG_FILE" &>/dev/null; then
+        rm -f "$marker" 2>/dev/null; return 1
+    fi
     local tmp; tmp=$(mktemp) || return 1
     if jq --arg p "$pass" '.auth.config += [$p]' "$ZIVPN_CONFIG_FILE" > "$tmp" 2>/dev/null; then
         mv "$tmp" "$ZIVPN_CONFIG_FILE"
+        rm -f "$marker" 2>/dev/null
         systemctl is-active --quiet zivpn 2>/dev/null && systemctl try-restart zivpn.service 2>/dev/null
         return 0
     fi
@@ -1525,6 +1535,18 @@ sync_runtime_components_if_needed() {
             write_hwid_enforcer
             systemctl restart skylartech-hwid-enforcer 2>/dev/null
         fi
+    fi
+
+    # Self-heal NAT on older installs: drop the legacy blanket TCP DNAT
+    # (tcp:1:65535 -> 36712) that hijacked HTTP Custom's TCP traffic into the
+    # udp-custom relay. Only act when it's actually present in the saved rules or
+    # the live table, so we don't flush PREROUTING on every launch.
+    if grep -q '^DNAT=tcp:1:65535:36712$' "$NAT_RULES_CONF" 2>/dev/null \
+       || iptables -t nat -C PREROUTING -p tcp --dport 1:65535 -j DNAT --to-destination :36712 2>/dev/null; then
+        echo -e "${C_BLUE}🔧 Migrating NAT rules: removing legacy blanket TCP DNAT (HTTP Custom / ZiVPN conflict)...${C_RESET}"
+        sed -i '/^DNAT=tcp:1:65535:36712$/d' "$NAT_RULES_CONF" 2>/dev/null
+        _nat_load_rules
+        _nat_apply
     fi
 }
 
@@ -1968,13 +1990,9 @@ create_user() {
         s_choice=${s_choice:-y}
         [[ "$s_choice" == "y" || "$s_choice" == "Y" ]] && strict=1
     fi
-    # Only relevant when udp-custom is installed: ask the port range to advertise
-    # in the UDP-Custom connection string (IP:range@user:pass).
-    local udp_port_range=""
-    if [[ "$app" == "http" ]] && systemctl is-active --quiet udp-custom; then
-        read -p "🚀 Enter UDP-Custom port range [1-65535]: " udp_port_range
-        udp_port_range=${udp_port_range:-1-65535}
-    fi
+    # NOTE: per-user UDP port ranges are intentionally not assigned. The NAT layer
+    # forwards the whole UDP range to the relays globally, so every account works
+    # without carving out per-user ranges.
     local expire_date
     expire_date=$(date -d "+$days days" +%Y-%m-%d)
     ensure_skylartech_system_group
@@ -1990,8 +2008,17 @@ create_user() {
     echo "$username:$password:$expire_date:$limit:$bandwidth_gb::$hwid:$strict:$app" >> "$DB_FILE"
     hwid_sync_allowed_db
 
-    if [[ "$app" == "zivpn" ]] && _ff_zivpn_add_pass "$password"; then
-        systemctl is-active --quiet zivpn 2>/dev/null && systemctl try-restart zivpn.service 2>/dev/null
+    if [[ "$app" == "zivpn" ]]; then
+        # Make sure the password lands in ZiVPN's auth list. _ff_zivpn_add_pass
+        # silently no-ops when jq or config.json are missing, so warn the admin
+        # rather than leave them thinking the ZiVPN account works when it can't.
+        if ! command -v jq &>/dev/null; then
+            echo -e "${C_YELLOW}⚠️ 'jq' not installed — could not add password to ZiVPN config. Install jq, then re-add.${C_RESET}"
+        elif [[ ! -f "$ZIVPN_CONFIG_FILE" ]]; then
+            echo -e "${C_YELLOW}⚠️ ZiVPN config ($ZIVPN_CONFIG_FILE) not found — is ZiVPN installed?${C_RESET}"
+        elif _ff_zivpn_add_pass "$password"; then
+            systemctl is-active --quiet zivpn 2>/dev/null && systemctl try-restart zivpn.service 2>/dev/null
+        fi
     fi
 
     local bw_display="Unlimited"
@@ -2012,12 +2039,6 @@ create_user() {
         echo -e "  - 🔒 HWID Lock:         ${C_YELLOW}$(_ff_hwid_label "$hwid" "$strict" strict)${C_RESET}"
     else
         echo -e "  - 🔒 HWID Lock:         ${C_DIM}none (multi-device)${C_RESET}"
-    fi
-    if [[ -n "$udp_port_range" ]] && systemctl is-active --quiet udp-custom; then
-        local udp_host
-        udp_host=$(detect_preferred_host)
-        [[ -z "$udp_host" ]] && udp_host=$(curl -s -4 icanhazip.com)
-        echo -e "  - 🚀 UDP-Custom:        ${C_YELLOW}${udp_host}:${udp_port_range}@${username}:${password}${C_RESET}"
     fi
     echo -e "    ${C_DIM}(Active monitoring service will enforce these limits)${C_RESET}"
 
@@ -2510,23 +2531,34 @@ _ff_zivpn_lock_user() {
     return 1
 }
 
-# Restore a user's ZiVPN password that lock previously removed.
+# Restore a user's ZiVPN password so they can reconnect after an unlock.
+# Robust by design: the password comes from the marker lock wrote, but if the
+# marker is missing or empty we fall back to the user's DB password (field 2) so
+# a ZiVPN account is never left unable to reconnect. The marker is only removed
+# AFTER the password is confirmed present in config.json, so a failed re-add
+# can be retried instead of losing the password permanently.
 # Echoes "changed" when the config was actually modified.
 _ff_zivpn_unlock_user() {
     local user="$1" pass marker="$ZIVPN_LOCK_DIR/${user}"
-    [[ -f "$marker" ]] || return 1
-    pass=$(cat "$marker" 2>/dev/null)
-    rm -f "$marker" 2>/dev/null
-    [[ -n "$pass" ]] || return 1
-    [[ -f "$ZIVPN_CONFIG_FILE" ]] || return 1
     command -v jq &>/dev/null || return 1
-    # Skip if it somehow already came back.
+    [[ -f "$ZIVPN_CONFIG_FILE" ]] || return 1
+    # Only relevant for ZiVPN accounts.
+    [[ "$(db_get_field "$user" 9)" == "zivpn" ]] || { rm -f "$marker" 2>/dev/null; return 1; }
+
+    # Prefer what lock recorded; fall back to the DB password.
+    pass=$(cat "$marker" 2>/dev/null)
+    [[ -n "$pass" ]] || pass=$(db_get_field "$user" 2)
+    [[ -n "$pass" ]] || { rm -f "$marker" 2>/dev/null; return 1; }
+
+    # Already present (someone restored it / never removed): just drop the marker.
     if jq -e --arg p "$pass" '.auth.config | index($p) != null' "$ZIVPN_CONFIG_FILE" &>/dev/null; then
+        rm -f "$marker" 2>/dev/null
         return 1
     fi
     local tmp; tmp=$(mktemp) || return 1
     if jq --arg p "$pass" '.auth.config += [$p]' "$ZIVPN_CONFIG_FILE" > "$tmp" 2>/dev/null; then
         mv "$tmp" "$ZIVPN_CONFIG_FILE"
+        rm -f "$marker" 2>/dev/null
         echo "changed"; return 0
     fi
     rm -f "$tmp" 2>/dev/null
@@ -5671,8 +5703,17 @@ create_trial_account() {
     chage -E "$expire_date" "$username"
     echo "$username:$password:$expire_date:$limit:$bandwidth_gb:trial::0:$app" >> "$DB_FILE"
 
-    if [[ "$app" == "zivpn" ]] && _ff_zivpn_add_pass "$password"; then
-        systemctl is-active --quiet zivpn 2>/dev/null && systemctl try-restart zivpn.service 2>/dev/null
+    if [[ "$app" == "zivpn" ]]; then
+        # Make sure the password lands in ZiVPN's auth list. _ff_zivpn_add_pass
+        # silently no-ops when jq or config.json are missing, so warn the admin
+        # rather than leave them thinking the ZiVPN account works when it can't.
+        if ! command -v jq &>/dev/null; then
+            echo -e "${C_YELLOW}⚠️ 'jq' not installed — could not add password to ZiVPN config. Install jq, then re-add.${C_RESET}"
+        elif [[ ! -f "$ZIVPN_CONFIG_FILE" ]]; then
+            echo -e "${C_YELLOW}⚠️ ZiVPN config ($ZIVPN_CONFIG_FILE) not found — is ZiVPN installed?${C_RESET}"
+        elif _ff_zivpn_add_pass "$password"; then
+            systemctl is-active --quiet zivpn 2>/dev/null && systemctl try-restart zivpn.service 2>/dev/null
+        fi
     fi
 
     # Record the precise expiry epoch so the limiter can enforce sub-day
@@ -6405,7 +6446,9 @@ RETURN=443
 RETURN=887
 RETURN=49222
 # DNAT rules  (format: proto:port_or_range:target_port)
-DNAT=tcp:1:65535:36712
+# NOTE: no blanket TCP DNAT — HTTP Custom (SSH/SSL over TCP) must reach its own
+# listeners untouched. Only UDP is forwarded to the relays, so TCP and UDP
+# (ZiVPN / udp-custom) coexist without conflict.
 DNAT=udp:6000:19999:5667
 DNAT=udp:1:5999:36712
 DNAT=udp:20000:65535:36712
@@ -6415,6 +6458,13 @@ RULES
 _nat_load_rules() {
     if [[ ! -f "$NAT_RULES_CONF" ]]; then
         _nat_default_rules > "$NAT_RULES_CONF"
+    fi
+    # Self-heal older installs: strip the legacy blanket TCP DNAT
+    # (tcp:1:65535:36712) that hijacked HTTP Custom's TCP traffic into the
+    # udp-custom relay. Removing it lets HTTP Custom (TCP) and ZiVPN (UDP)
+    # coexist. Safe and idempotent — only rewrites the file when present.
+    if grep -q '^DNAT=tcp:1:65535:36712$' "$NAT_RULES_CONF" 2>/dev/null; then
+        sed -i '/^DNAT=tcp:1:65535:36712$/d' "$NAT_RULES_CONF" 2>/dev/null
     fi
     mapfile -t NAT_RETURN < <(grep '^RETURN=' "$NAT_RULES_CONF" | cut -d= -f2)
     mapfile -t NAT_DNAT < <(grep '^DNAT=' "$NAT_RULES_CONF" | cut -d= -f2)
@@ -6507,7 +6557,7 @@ apply_default_nat_rules() {
     _nat_default_rules > "$NAT_RULES_CONF"
     _nat_load_rules
     _nat_apply
-    echo -e "${C_GREEN}✅ Default NAT rules applied (8 RETURN + 4 DNAT).${C_RESET}"
+    echo -e "${C_GREEN}✅ Default NAT rules applied (8 RETURN + 3 DNAT).${C_RESET}"
 }
 
 nat_forward_menu() {
