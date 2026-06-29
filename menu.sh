@@ -1043,6 +1043,7 @@ ff_unblock_uid() {
         while "$x" -D OUTPUT -m owner --uid-owner "$uid" -j DROP 2>/dev/null; do :; done
     done
 }
+EOF
 
 # --- UDP cutoff for auto-locks (mirrors the menu's manual lock) ---------------
 # A system shadow lock (usermod -L) stops SSH and udp-custom re-auth, but ZiVPN
@@ -1100,6 +1101,51 @@ _ff_zivpn_add_pass() {
     local tmp; tmp=$(mktemp) || return 1
     if jq --arg p "$pass" '.auth.config += [$p]' "$ZIVPN_CONFIG_FILE" > "$tmp" 2>/dev/null; then
         mv "$tmp" "$ZIVPN_CONFIG_FILE"
+        return 0
+    fi
+    rm -f "$tmp" 2>/dev/null
+    return 1
+}
+
+# Append ZiVPN utility functions + remaining limiter loop to the limiter script.
+cat >> "$LIMITER_SCRIPT" << 'EOF'
+
+# --- UDP cutoff for auto-locks (mirrors the menu's manual lock) ---------------
+# A system shadow lock (usermod -L) stops SSH and udp-custom re-auth, but ZiVPN
+# authenticates against a password list in config.json, so an auto-locked user
+# could still reconnect over ZiVPN. Pull that password out (recording it under
+# ZIVPN_LOCK_DIR so the menu's unlock/renew can restore it precisely).
+# Echoes "changed" only when config.json was actually modified.
+ff_zivpn_lock_user() {
+    local user="$1" pass="$2"
+    [[ -n "$pass" ]] || return 1
+    [[ -f "$ZIVPN_CONFIG_FILE" ]] || return 1
+    command -v jq &>/dev/null || return 1
+    jq -e --arg p "$pass" '.auth.config | index($p) != null' "$ZIVPN_CONFIG_FILE" &>/dev/null || return 1
+    local tmp; tmp=$(mktemp) || return 1
+    if jq --arg p "$pass" '.auth.config |= map(select(. != $p))' "$ZIVPN_CONFIG_FILE" > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$ZIVPN_CONFIG_FILE"
+        mkdir -p "$ZIVPN_LOCK_DIR" 2>/dev/null
+        printf '%s' "$pass" > "$ZIVPN_LOCK_DIR/${user}"
+        echo "changed"; return 0
+    fi
+    rm -f "$tmp" 2>/dev/null
+    return 1
+}
+
+ff_zivpn_unlock_user() {
+    local user="$1" pass marker="$ZIVPN_LOCK_DIR/${user}"
+    [[ -f "$marker" ]] || return 1
+    pass=$(cat "$marker" 2>/dev/null)
+    rm -f "$marker" 2>/dev/null
+    [[ -n "$pass" ]] || return 1
+    [[ -f "$ZIVPN_CONFIG_FILE" ]] || return 1
+    command -v jq &>/dev/null || return 1
+    jq -e --arg p "$pass" '.auth.config | index($p) != null' "$ZIVPN_CONFIG_FILE" &>/dev/null && return 1
+    local tmp; tmp=$(mktemp) || return 1
+    if jq --arg p "$pass" '.auth.config += [$p]' "$ZIVPN_CONFIG_FILE" > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$ZIVPN_CONFIG_FILE"
+        systemctl is-active --quiet zivpn 2>/dev/null && systemctl try-restart zivpn.service 2>/dev/null
         return 0
     fi
     rm -f "$tmp" 2>/dev/null
