@@ -6254,7 +6254,7 @@ main_menu() {
         echo -e "   ${C_TITLE}              👤 USER MANAGEMENT              ${C_RESET}"
         echo -e "   ${C_TITLE}─────────────────────────────────────────────────────${C_RESET}"
         printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-26s\033[38G${C_CHOICE}[%2s]${C_RESET}\033[43G%-26s\033[K\n" "1" "🌟 Create New User" "7" "📋 List Users"
-        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-26s\033[38G${C_CHOICE}[%2s]${C_RESET}\033[43G%-26s\033[K\n" "2" "🗑️ Delete User" "8" "📱 Client Config"
+        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-26s\033[38G${C_CHOICE}[%2s]${C_RESET}\033[43G%-26s\033[K\n" "2" "🗑️ Delete User" "8" "📱 User Config"
         printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-26s\033[38G${C_CHOICE}[%2s]${C_RESET}\033[43G%-26s\033[K\n" "3" "🔄 Renew User" "9" "⏱️ Trial Account"
         printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-26s\033[38G${C_CHOICE}[%2s]${C_RESET}\033[43G%-26s\033[K\n" "4" "🔒 Lock User" "10" "👥 Bulk Users"
         printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-26s\033[38G${C_CHOICE}[%2s]${C_RESET}\033[43G%-26s\033[K\n" "5" "🔓 Unlock User" "11" "👁️ User Details"
