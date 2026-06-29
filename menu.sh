@@ -6273,7 +6273,7 @@ main_menu() {
         echo -e "   ${C_TITLE}              ⚙️ SYSTEM SETTINGS               ${C_RESET}"
         echo -e "   ${C_TITLE}─────────────────────────────────────────────────────${C_RESET}"
         printf "     ${C_CHOICE}[%2s]${C_RESET} %-26s ${C_CHOICE}[%2s]${C_RESET} %-26s\n" "15" "🌐 Free Domain" "18" "💾 Backup Users"
-        printf "     ${C_CHOICE}[%2s]${C_RESET} %-26s ${C_CHOICE}[%2s]${C_RESET} %-26s\n" "16" "🎨 SSH Banner" "19" "\b📥 Restore Users"
+        printf "     ${C_CHOICE}[%2s]${C_RESET} %-26s ${C_CHOICE}[%2s]${C_RESET} %-26s\n" "16" "🎨 SSH Banner" "19" "📥 Restore Users"
         printf "     ${C_CHOICE}[%2s]${C_RESET} %-26s ${C_CHOICE}[%2s]${C_RESET} %-26s\n" "17" "🔄 Auto-Reboot Task" "20" "🧹 Cleanup Expired"
 
         echo
