@@ -10,5 +10,6 @@ __pycache__/
 *.swp
 *.swo
 *~
+*.bak
 .DS_Store
 Thumbs.db

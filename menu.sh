@@ -1099,6 +1099,7 @@ ZIVPN_CONFIG_FILE="/etc/zivpn/config.json"
 ZIVPN_LOCK_DIR="/etc/VPS_superScript/zivpn_locked"
 ZIVPN_LISTEN_PORT="5667"
 UDP_CUSTOM_LISTEN_PORT="36712"
+BADVPN_LISTEN_PORT="7300"
 
 mkdir -p "$BW_DIR" "$PID_DIR"
 shopt -s nullglob
@@ -6301,64 +6302,6 @@ HYCEOF
     
     invalidate_banner_cache
     refresh_dynamic_banner_routing_if_enabled
-}
-
-view_user_bandwidth() {
-    _select_user_interface "--- 📊 View User Bandwidth ---"
-    local u=$SELECTED_USER
-    if [[ "$u" == "NO_USERS" || -z "$u" ]]; then return; fi
-    
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 📊 Bandwidth Details: ${C_YELLOW}$u${C_PURPLE} ---${C_RESET}\n"
-    
-    local line; line=$(grep "^$u:" "$DB_FILE")
-    local _u _p _e _l bandwidth_gb
-    IFS=: read -r _u _p _e _l bandwidth_gb _ <<< "$line"
-    [[ -z "$bandwidth_gb" ]] && bandwidth_gb="0"
-    
-    local used_bytes=0
-    if [[ -f "$BANDWIDTH_DIR/${u}.usage" ]]; then
-        read -r used_bytes < "$BANDWIDTH_DIR/${u}.usage" 2>/dev/null || used_bytes=0
-        [[ -z "$used_bytes" ]] && used_bytes=0
-    fi
-    
-    local used_mb; used_mb=$(awk "BEGIN {printf \"%.2f\", $used_bytes / 1048576}")
-    local used_gb; used_gb=$(awk "BEGIN {printf \"%.3f\", $used_bytes / 1073741824}")
-    
-    echo -e "  ${C_CYAN}Data Used:${C_RESET}        ${C_WHITE}${used_gb} GB${C_RESET} (${used_mb} MB)"
-    
-    if [[ "$bandwidth_gb" == "0" ]]; then
-        echo -e "  ${C_CYAN}Bandwidth Limit:${C_RESET}  ${C_GREEN}Unlimited${C_RESET}"
-        echo -e "  ${C_CYAN}Status:${C_RESET}           ${C_GREEN}No quota restrictions${C_RESET}"
-    else
-        local quota_bytes; quota_bytes=$(awk "BEGIN {printf \"%.0f\", $bandwidth_gb * 1073741824}")
-        local percentage; percentage=$(awk "BEGIN {printf \"%.1f\", ($used_bytes / $quota_bytes) * 100}")
-        local remaining_bytes; remaining_bytes=$((quota_bytes - used_bytes))
-        if [[ "$remaining_bytes" -lt 0 ]]; then remaining_bytes=0; fi
-        local remaining_gb; remaining_gb=$(awk "BEGIN {printf \"%.3f\", $remaining_bytes / 1073741824}")
-        
-        echo -e "  ${C_CYAN}Bandwidth Limit:${C_RESET}  ${C_YELLOW}${bandwidth_gb} GB${C_RESET}"
-        echo -e "  ${C_CYAN}Remaining:${C_RESET}        ${C_WHITE}${remaining_gb} GB${C_RESET}"
-        echo -e "  ${C_CYAN}Usage:${C_RESET}            ${C_WHITE}${percentage}%${C_RESET}"
-        
-        # Progress bar
-        local bar_width=30
-        local filled; filled=$(awk "BEGIN {printf \"%.0f\", ($percentage / 100) * $bar_width}")
-        if [[ "$filled" -gt "$bar_width" ]]; then filled=$bar_width; fi
-        local empty=$((bar_width - filled))
-        local bar_color="$C_GREEN"
-        if (( $(awk "BEGIN {print ($percentage > 80)}" ) )); then bar_color="$C_RED"
-        elif (( $(awk "BEGIN {print ($percentage > 50)}" ) )); then bar_color="$C_YELLOW"
-        fi
-        printf "  ${C_CYAN}Progress:${C_RESET}         ${bar_color}["
-        for ((i=0; i<filled; i++)); do printf "█"; done
-        for ((i=0; i<empty; i++)); do printf "░"; done
-        printf "]${C_RESET} ${percentage}%%\n"
-        
-        if [[ "$used_bytes" -ge "$quota_bytes" ]]; then
-            echo -e "\n  ${C_RED}⚠️ USER HAS EXCEEDED BANDWIDTH QUOTA — ACCOUNT LOCKED${C_RESET}"
-        fi
-    fi
 }
 
 bulk_create_users() {
