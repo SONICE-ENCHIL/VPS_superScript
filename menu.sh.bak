@@ -87,7 +87,6 @@ ZIVPN_LOCK_DIR="$DB_DIR/zivpn_locked"
 # hwid_allowed.db is the runtime mirror the enforcer daemon reads, so it never
 # has to parse the password-bearing main users.db while tailing journals.
 HWID_ALLOWED_DB="$DB_DIR/hwid_allowed.db"            # username|password|hwid|strict
-EXPORTS_DIR="/etc/skylartech/exports"
 HWID_ENFORCER_SCRIPT="/usr/local/bin/skylartech-hwid-enforcer.sh"
 HWID_ENFORCER_SERVICE="/etc/systemd/system/skylartech-hwid-enforcer.service"
 HWID_STATE_FILE="$DB_DIR/hwid_enforce.state"         # "on" / "off" global flag
@@ -97,57 +96,6 @@ DESEC_TOKEN="V55cFY8zTictLCPfviiuX5DHjs15"
 DESEC_DOMAIN="manager.skylartech.qzz.io"
 
 DOMAIN_OVERRIDE_FILE="$DB_DIR/domain_override"
-
-# ── DuckDNS ──
-DUCKDNS_CONFIG_FILE="$DB_DIR/duckdns.conf"
-DUCKDNS_CRON_SCHED="*/5 * * * *"
-
-# ── New Protocol Ports ──
-DROPBEAR_PORTS="109,143"
-OPENVPN_TCP_PORT="1194"
-OPENVPN_UDP_PORT="2200"
-OPENVPN_SDNS_PORT="25000"
-WIREGUARD_PORT="51820"
-HYSTERIA1_PORT="20000"
-HYSTERIA2_PORT="20001"
-SHADOWSOCKS_PORT="2443"
-SHADOWSOCKS2_PORT="3443"
-SOCKS5_PORT="1080"
-SLOWUDP_PORT="9400"
-OHP_PORT_1="8181"
-OHP_PORT_2="8282"
-OHP_PORT_3="8383"
-SQUID_PORT="3128"
-STUNNEL_PORT="777"
-UDP_REQUEST_PORT="36713"
-ARGO_TUNNEL_HTTP="2052"
-ARGO_TUNNEL_HTTPS="2053"
-REST_API_PORT="9000"
-
-# ── Service Info Database (for Service Info menu) ──
-SERVICE_INFO_DB=(
-  "SSH:OpenSSH server for secure shell access. Default: 22. Conflicts: none."
-  "HAProxy:Protocol-aware edge proxy/load balancer on 80/443. Routes SSH, HTTP, TLS. Default: 80, 443. Conflicts: Stunnel, Argo on same ports."
-  "ZiVPN:Custom UDP VPN protocol for tunnel connections. Default: 5667. Conflicts: none."
-  "UDP-Custom:Custom UDP tunneling protocol, popular for VPN. Default: 36712. Conflicts: UDP Request if same port."
-  "BadVPN:UDP gateway for forwarding UDP traffic. Default: 7300. Conflicts: none."
-  "DNSTT:DNS-over-HTTPS tunnel (SlowDNS). Default: 53. Conflicts: SlowUDP if same port."
-  "Nginx:Internal reverse proxy for WebSocket/gRPC. Default: 8880, 8443. Conflicts: Argo on same ports."
-  "FalconProxy:Lightweight TCP/UDP proxy with version selection. Default: 8080. Conflicts: none."
-  "Dropbear:Lightweight SSH server alternative, more connections. Default: 109, 143. Conflicts: none."
-  "OpenVPN:Full VPN tunnel with TCP/UDP/SlowDNS modes. Default: 1194, 2200, 25000. Conflicts: none."
-  "WireGuard:Fast kernel-level VPN with modern crypto. Default: 51820. Conflicts: none."
-  "Hysteria:HTTP/3 (QUIC) proxy to bypass DPI/censorship. Default: random high UDP. Conflicts: none (avoid 443/8443)."
-  "ShadowSocks:Lightweight secure proxy protocol. Default: 2443, 3443. Conflicts: none."
-  "Socks5:Simple SOCKS5 proxy for tunnel routing. Default: 1080. Conflicts: none."
-  "SlowUDP:UDP variant of SlowDNS for DNS tunneling. Default: 9400. Conflicts: DNSTT if same port."
-  "OHP:Open HTTP Puncher - HTTP tunnel for restricted networks. Default: 8181, 8282, 8383. Conflicts: none."
-  "Squid:HTTP forward proxy with caching. Default: 3128. Conflicts: none."
-  "Stunnel:SSL/TLS wrapper for non-encrypted connections. Default: 777. Conflicts: HAProxy if set to 443."
-  "UDP-Request:UDP request tunnel, configurable port. Default: 36713. Conflicts: UDP Custom if same port."
-  "Argo-Tunnel:Cloudflare Tunnel - outbound-only reverse proxy via Cloudflare. Default: 2052, 2053. Conflicts: HAProxy/Nginx if set to 80/443/8880/8443."
-  "Rest-API:RESTful API on port 9000 for programmatic user management. Default: 9000. Conflicts: none."
-)
 
 # --- Repository / binary source -------------------------------------------
 # Where release assets (Falcon Proxy) and raw files (udp-custom) are pulled
@@ -810,12 +758,11 @@ delete_skylartech_user_accounts() {
 
     for username in "${users_to_delete[@]}"; do
         [[ -n "$username" ]] || continue
-        local _del_app
-        _del_app=$(db_get_field "$username" 9)
         # If this was a ZiVPN account, remove its password from config.json
-        local _zivpn_pass
+        local _zivpn_pass _zivpn_app
         _zivpn_pass=$(db_get_field "$username" 2)
-        if [[ "$_del_app" == "zivpn" && -n "$_zivpn_pass" && -f "$ZIVPN_CONFIG_FILE" ]] && command -v jq &>/dev/null; then
+        _zivpn_app=$(db_get_field "$username" 9)
+        if [[ "$_zivpn_app" == "zivpn" && -n "$_zivpn_pass" && -f "$ZIVPN_CONFIG_FILE" ]] && command -v jq &>/dev/null; then
             if jq -e --arg p "$_zivpn_pass" '.auth.config | index($p) != null' "$ZIVPN_CONFIG_FILE" &>/dev/null; then
                 local _tmp; _tmp=$(mktemp) || true
                 if [[ -n "$_tmp" ]] && jq --arg p "$_zivpn_pass" '.auth.config |= map(select(. != $p))' "$ZIVPN_CONFIG_FILE" > "$_tmp" 2>/dev/null; then
@@ -823,31 +770,6 @@ delete_skylartech_user_accounts() {
                     echo -e " 🔑 ZiVPN password for '${C_YELLOW}$username${C_RESET}' removed from config."
                 fi
                 rm -f "$_tmp" 2>/dev/null
-            fi
-        fi
-        # Clean up exported config files
-        rm -f "$EXPORTS_DIR/${username}.ovpn" "$EXPORTS_DIR/${username}.conf" "$EXPORTS_DIR/${username}-hysteria.json" 2>/dev/null
-        # OpenVPN: revoke client cert
-        if [[ "$_del_app" == "openvpn" && -f /etc/openvpn/easy-rsa/pki/index.txt ]]; then
-            cd /etc/openvpn/easy-rsa 2>/dev/null && EASYRSA_BATCH=1 ./easyrsa revoke "$username" 2>/dev/null && EASYRSA_BATCH=1 ./easyrsa gen-crl 2>/dev/null
-        fi
-        # WireGuard: remove peer
-        if [[ "$_del_app" == "wireguard" && -f /etc/wireguard/wg0.conf ]]; then
-            local _wg_del_pub
-            _wg_del_pub=$(grep -A1 "^# BEGIN ${username}$" /etc/wireguard/wg0.conf 2>/dev/null | grep PublicKey | awk '{print $3}')
-            if [[ -n "$_wg_del_pub" ]]; then
-                wg set wg0 peer "$_wg_del_pub" remove 2>/dev/null
-                sed -i "/^# BEGIN ${username}$/,/^# END ${username}$/d" /etc/wireguard/wg0.conf 2>/dev/null
-                wg-quick down wg0 2>/dev/null; wg-quick up wg0 2>/dev/null
-            fi
-        fi
-        # Hysteria2: remove user from config
-        if [[ "$_del_app" == "hysteria2" && -f /etc/hysteria/config.json ]] && command -v jq &>/dev/null; then
-            local _tmp2; _tmp2=$(mktemp) || true
-            if [[ -n "$_tmp2" ]]; then
-                jq --arg u "$username" '.auth.config |= map(select(.user != $u))' /etc/hysteria/config.json > "$_tmp2" 2>/dev/null && mv "$_tmp2" /etc/hysteria/config.json
-                rm -f "$_tmp2" 2>/dev/null
-                systemctl try-restart hysteria-server 2>/dev/null
             fi
         fi
         # Clear any per-user traffic block before the UID is freed/recycled.
@@ -880,9 +802,6 @@ delete_skylartech_user_accounts() {
 
     # Keep the HWID enforcer's view current after removals.
     hwid_sync_allowed_db
-
-    local _del_users="${users_to_delete[*]}"
-    _send_telegram "🔔 <b>User(s) Deleted</b>%0A👤 $_del_users"
 
     invalidate_banner_cache
     refresh_dynamic_banner_routing_if_enabled
@@ -1132,6 +1051,53 @@ cat >> "$LIMITER_SCRIPT" << 'EOF'
 # Default excluded ports for udp-custom (53 = DNS, 5300 = DNS-over-TLS).
 # These ports bypass the tunnel so server-local DNS (or DNSTT) still works.
 UDP_CUSTOM_EXCLUDE_DEFAULT="53,5300"
+
+# --- UDP cutoff for auto-locks (mirrors the menu's manual lock) ---------------
+# A system shadow lock (usermod -L) stops SSH and udp-custom re-auth, but ZiVPN
+# authenticates against a password list in config.json, so an auto-locked user
+# could still reconnect over ZiVPN. Pull that password out (recording it under
+# ZIVPN_LOCK_DIR so the menu's unlock/renew can restore it precisely).
+# Echoes "changed" only when config.json was actually modified.
+ff_zivpn_lock_user() {
+    local user="$1" pass="$2"
+    [[ -n "$pass" ]] || return 1
+    [[ -f "$ZIVPN_CONFIG_FILE" ]] || return 1
+    command -v jq &>/dev/null || return 1
+    jq -e --arg p "$pass" '.auth.config | index($p) != null' "$ZIVPN_CONFIG_FILE" &>/dev/null || return 1
+    local tmp; tmp=$(mktemp) || return 1
+    if jq --arg p "$pass" '.auth.config |= map(select(. != $p))' "$ZIVPN_CONFIG_FILE" > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$ZIVPN_CONFIG_FILE"
+        mkdir -p "$ZIVPN_LOCK_DIR" 2>/dev/null
+        printf '%s' "$pass" > "$ZIVPN_LOCK_DIR/${user}"
+        echo "changed"; return 0
+    fi
+    rm -f "$tmp" 2>/dev/null
+    return 1
+}
+
+ff_zivpn_unlock_user() {
+    local user="$1" pass marker="$ZIVPN_LOCK_DIR/${user}"
+    [[ -f "$ZIVPN_CONFIG_FILE" ]] || return 1
+    command -v jq &>/dev/null || return 1
+    # Prefer the marker lock wrote; fall back to the DB password so a ZiVPN
+    # account is never left unable to reconnect if the marker was lost.
+    pass=$(cat "$marker" 2>/dev/null)
+    [[ -n "$pass" ]] || pass=$(awk -F: -v u="$user" '$1==u{print $2; exit}' "$DB_FILE" 2>/dev/null)
+    [[ -n "$pass" ]] || { rm -f "$marker" 2>/dev/null; return 1; }
+    # Already present: just clear the marker.
+    if jq -e --arg p "$pass" '.auth.config | index($p) != null' "$ZIVPN_CONFIG_FILE" &>/dev/null; then
+        rm -f "$marker" 2>/dev/null; return 1
+    fi
+    local tmp; tmp=$(mktemp) || return 1
+    if jq --arg p "$pass" '.auth.config += [$p]' "$ZIVPN_CONFIG_FILE" > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$ZIVPN_CONFIG_FILE"
+        rm -f "$marker" 2>/dev/null
+        systemctl is-active --quiet zivpn 2>/dev/null && systemctl try-restart zivpn.service 2>/dev/null
+        return 0
+    fi
+    rm -f "$tmp" 2>/dev/null
+    return 1
+}
 
 # Bounce the UDP relays so a just-locked user's LIVE root-owned session dies at
 # once (the relays run as root, so UID drops and pkill can't reach them). Flush
@@ -1478,11 +1444,6 @@ EOF
 }
 
 # --- UDP cutoff for auto-locks (mirrors the menu's manual lock) ---------------
-# A system shadow lock (usermod -L) stops SSH and udp-custom re-auth, but ZiVPN
-# authenticates against a password list in config.json, so an auto-locked user
-# could still reconnect over ZiVPN. Pull that password out (recording it under
-# ZIVPN_LOCK_DIR so the menu's unlock/renew can restore it precisely).
-# Echoes "changed" only when config.json was actually modified.
 ff_zivpn_lock_user() {
     local user="$1" pass="$2"
     [[ -n "$pass" ]] || return 1
@@ -1943,6 +1904,17 @@ _select_multi_user_interface() {
     done
 }
 
+get_user_status() {
+    local username="$1"
+    if ! id "$username" &>/dev/null; then echo -e "${C_RED}Not Found${C_RESET}"; return; fi
+    local expiry_date=$(grep "^$username:" "$DB_FILE" | cut -d: -f3)
+    if passwd -S "$username" 2>/dev/null | grep -q " L "; then echo -e "${C_YELLOW}🔒 Locked${C_RESET}"; return; fi
+    local expiry_ts=$(date -d "$expiry_date" +%s 2>/dev/null || echo 0)
+    local current_ts=$(date +%s)
+    if [[ $expiry_ts -lt $current_ts ]]; then echo -e "${C_RED}🗓️ Expired${C_RESET}"; return; fi
+    echo -e "${C_GREEN}🟢 Active${C_RESET}"
+}
+
 create_user() {
     clear; show_banner
     echo -e "${C_BOLD}${C_PURPLE}--- ✨ Create New SSH User ---${C_RESET}"
@@ -1999,24 +1971,12 @@ create_user() {
     # App type selector
     local app="http"
     echo -e "\n${C_DIM}Select the target application for this account:${C_RESET}"
-    printf "  ${C_GREEN}[1]${C_RESET} %-16s ${C_DIM}(HTTP Custom / SSH Tunnel)${C_RESET}\n" "HTTP Custom"
-    printf "  ${C_GREEN}[2]${C_RESET} %-16s ${C_DIM}(ZiVPN / UDP VPN)${C_RESET}\n" "ZiVPN"
-    printf "  ${C_GREEN}[3]${C_RESET} %-16s ${C_DIM}(OpenVPN)${C_RESET}\n" "OpenVPN"
-    printf "  ${C_GREEN}[4]${C_RESET} %-16s ${C_DIM}(WireGuard)${C_RESET}\n" "WireGuard"
-    printf "  ${C_GREEN}[5]${C_RESET} %-16s ${C_DIM}(Hysteria2 / HWID)${C_RESET}\n" "Hysteria2"
-    printf "  ${C_GREEN}[6]${C_RESET} %-16s ${C_DIM}(ShadowSocks / HWID)${C_RESET}\n" "ShadowSocks"
-    printf "  ${C_GREEN}[7]${C_RESET} %-16s ${C_DIM}(SOCKS5 / PAM)${C_RESET}\n" "SOCKS5"
-    printf "  ${C_GREEN}[8]${C_RESET} %-16s ${C_DIM}(UDP Request / HWID)${C_RESET}\n" "UDP Request"
+    printf "  ${C_GREEN}[1]${C_RESET} %-15s ${C_DIM}(HTTP Custom / SSH Tunnel)${C_RESET}\n" "HTTP Custom"
+    printf "  ${C_GREEN}[2]${C_RESET} %-15s ${C_DIM}(ZiVPN / UDP VPN)${C_RESET}\n" "ZiVPN"
     read -p "👉 App type [1]: " app_choice
     app_choice=${app_choice:-1}
     case "$app_choice" in
         2|z|Z|zivpn|ZiVPN) app="zivpn" ;;
-        3|o|O|openvpn|OpenVPN) app="openvpn" ;;
-        4|w|W|wireguard|WireGuard) app="wireguard" ;;
-        5|h|H|hysteria|Hysteria2) app="hysteria2" ;;
-        6|s|S|shadowsocks|ShadowSocks) app="shadowsocks" ;;
-        7|socks5|SOCKS5) app="socks5" ;;
-        8|u|U|udp|UDP|udpreq|UDPReq) app="udp_request" ;;
         *) app="http" ;;
     esac
     echo -e "${C_GREEN}✅ App type set to: ${C_YELLOW}$app${C_RESET}\n"
@@ -2053,116 +2013,16 @@ create_user() {
     hwid_sync_allowed_db
 
     if [[ "$app" == "zivpn" ]]; then
+        # Make sure the password lands in ZiVPN's auth list. _ff_zivpn_add_pass
+        # silently no-ops when jq or config.json are missing, so warn the admin
+        # rather than leave them thinking the ZiVPN account works when it can't.
         if ! command -v jq &>/dev/null; then
-            echo -e "${C_YELLOW}⚠️ 'jq' not installed — could not add password to ZiVPN config.${C_RESET}"
+            echo -e "${C_YELLOW}⚠️ 'jq' not installed — could not add password to ZiVPN config. Install jq, then re-add.${C_RESET}"
         elif [[ ! -f "$ZIVPN_CONFIG_FILE" ]]; then
             echo -e "${C_YELLOW}⚠️ ZiVPN config ($ZIVPN_CONFIG_FILE) not found — is ZiVPN installed?${C_RESET}"
         elif _ff_zivpn_add_pass "$password"; then
             systemctl is-active --quiet zivpn 2>/dev/null && systemctl try-restart zivpn.service 2>/dev/null
         fi
-    fi
-
-    # ── OpenVPN per-user config ──
-    if [[ "$app" == "openvpn" && -d /etc/openvpn/easy-rsa/pki ]]; then
-        local _ovpn_ip; _ovpn_ip=$(curl -s -4 icanhazip.com 2>/dev/null || echo "SERVER_IP")
-        cd /etc/openvpn/easy-rsa 2>/dev/null && EASYRSA_BATCH=1 ./easyrsa build-client-full "$username" nopass 2>/dev/null
-        local _ovpn_file="$EXPORTS_DIR/${username}.ovpn"
-        mkdir -p "$EXPORTS_DIR" 2>/dev/null
-        cat > "$_ovpn_file" <<OVPNEOF
-client
-dev tun
-proto tcp
-remote ${_ovpn_ip} ${OPENVPN_TCP_PORT}
-<connection>
-remote ${_ovpn_ip} ${OPENVPN_UDP_PORT}
-proto udp
-</connection>
-<connection>
-remote ${_ovpn_ip} ${OPENVPN_SDNS_PORT}
-proto udp
-</connection>
-resolv-retry infinite
-nobind
-persist-key
-persist-tun
-auth SHA256
-cipher AES-256-GCM
-data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305
-auth-user-pass
-<ca>
-$(cat /etc/openvpn/easy-rsa/pki/ca.crt 2>/dev/null)
-</ca>
-<cert>
-$(cat /etc/openvpn/easy-rsa/pki/issued/${username}.crt 2>/dev/null)
-</cert>
-<key>
-$(cat /etc/openvpn/easy-rsa/pki/private/${username}.key 2>/dev/null)
-</key>
-<tls-auth>
-$(cat /etc/openvpn/ta.key 2>/dev/null)
-</tls-auth>
-key-direction 1
-OVPNEOF
-        echo -e "\n${C_GREEN}✅ OpenVPN config generated: ${C_YELLOW}$_ovpn_file${C_RESET}"
-    fi
-
-    # ── WireGuard per-user config ──
-    if [[ "$app" == "wireguard" && -f /etc/wireguard/wg0.conf ]]; then
-        local _wg_ip; _wg_ip=$(curl -s -4 icanhazip.com 2>/dev/null || echo "SERVER_IP")
-        local _wg_priv; _wg_priv=$(wg genkey)
-        local _wg_pub; _wg_pub=$(echo "$_wg_priv" | wg pubkey)
-        local _wg_srv_pub; _wg_srv_pub=$(cat /etc/wireguard/server.pub 2>/dev/null)
-        local _wg_file="$EXPORTS_DIR/${username}.conf"
-        mkdir -p "$EXPORTS_DIR" 2>/dev/null
-        local _wg_octet=2
-        local _wg_last; _wg_last=$(grep -oP '10\.66\.66\.\d+' /etc/wireguard/wg0.conf 2>/dev/null | sort -t. -k4 -n | tail -1)
-        [[ -n "$_wg_last" ]] && _wg_octet=$((${_wg_last##*.} + 1))
-        local _wg_addr="10.66.66.${_wg_octet}"
-        cat >> /etc/wireguard/wg0.conf <<WGPEOF
-# BEGIN ${username}
-[Peer]
-PublicKey = ${_wg_pub}
-AllowedIPs = ${_wg_addr}/32
-# END ${username}
-WGPEOF
-        cat > "$_wg_file" <<WGCEOF
-[Interface]
-PrivateKey = ${_wg_priv}
-Address = ${_wg_addr}/24
-DNS = 8.8.8.8, 1.1.1.1
-[Peer]
-PublicKey = ${_wg_srv_pub}
-Endpoint = ${_wg_ip}:${WIREGUARD_PORT}
-AllowedIPs = 0.0.0.0/0
-PersistentKeepalive = 25
-WGCEOF
-        wg-quick down wg0 2>/dev/null; wg-quick up wg0 2>/dev/null
-        echo -e "\n${C_GREEN}✅ WireGuard config generated: ${C_YELLOW}$_wg_file${C_RESET}"
-    fi
-
-    # ── Hysteria2 per-user config ──
-    if [[ "$app" == "hysteria2" && -f /etc/hysteria/config.json ]] && command -v jq &>/dev/null; then
-        local _hy_ip; _hy_ip=$(curl -s -4 icanhazip.com 2>/dev/null || echo "SERVER_IP")
-        local _hy_file="$EXPORTS_DIR/${username}-hysteria.json"
-        mkdir -p "$EXPORTS_DIR" 2>/dev/null
-        local _tmp; _tmp=$(mktemp) 2>/dev/null || true
-        if [[ -n "$_tmp" ]]; then
-            jq --arg u "$username" --arg p "$password" '.auth.config += [{"user": $u, "pass": $p}]' /etc/hysteria/config.json > "$_tmp" 2>/dev/null && mv "$_tmp" /etc/hysteria/config.json
-            rm -f "$_tmp" 2>/dev/null
-        fi
-        cat > "$_hy_file" <<HYCEOF
-{
-  "server": "${_hy_ip}:${HYSTERIA2_PORT}",
-  "auth": "${password}",
-  "tls": { "sni": "${_hy_ip}", "insecure": true },
-  "quic": { "initStreamReceiveWindow": 8388608, "maxIdleTimeout": "30s", "keepAliveInterval": "10s" },
-  "fastOpen": true,
-  "lazy": true,
-  "socks5": { "listen": "127.0.0.1:1080" }
-}
-HYCEOF
-        systemctl restart hysteria-server 2>/dev/null
-        echo -e "\n${C_GREEN}✅ Hysteria2 config generated: ${C_YELLOW}$_hy_file${C_RESET}"
     fi
 
     local bw_display="Unlimited"
@@ -2184,10 +2044,6 @@ HYCEOF
     else
         echo -e "  - 🔒 HWID Lock:         ${C_DIM}none (multi-device)${C_RESET}"
     fi
-    if [[ "$app" == "http" ]]; then
-        local _udp_ip; _udp_ip=$(curl -s -4 icanhazip.com 2>/dev/null || echo "SERVER_IP")
-        echo -e "  - 📡 UDP-CUSTOM:        ${C_CYAN}${_udp_ip}:1-65535@${username}:${password}${C_RESET}"
-    fi
     echo -e "    ${C_DIM}(Active monitoring service will enforce these limits)${C_RESET}"
 
     # Auto-ask for config generation
@@ -2196,8 +2052,6 @@ HYCEOF
     if [[ "$gen_conf" == "y" || "$gen_conf" == "Y" ]]; then
         generate_client_config "$username" "$password"
     fi
-    
-    _send_telegram "🔔 <b>User Created</b>%0A👤 $username%0A🗓️ Expires: $expire_date%0A📱 App: $app"
     
     invalidate_banner_cache
     refresh_dynamic_banner_routing_if_enabled
@@ -2260,15 +2114,7 @@ view_user_details() {
     [[ "$cur_marker" == "trial" ]] && marker_display="${C_YELLOW}trial${C_RESET}"
 
     local app_display="${C_CYAN}HTTP Custom${C_RESET}"
-    case "$cur_app" in
-        zivpn)       app_display="${C_CYAN}ZiVPN${C_RESET}" ;;
-        openvpn)     app_display="${C_CYAN}OpenVPN${C_RESET}" ;;
-        wireguard)   app_display="${C_CYAN}WireGuard${C_RESET}" ;;
-        hysteria2)   app_display="${C_CYAN}Hysteria2${C_RESET}" ;;
-        shadowsocks) app_display="${C_CYAN}ShadowSocks${C_RESET}" ;;
-        socks5)      app_display="${C_CYAN}SOCKS5${C_RESET}" ;;
-        udp_request) app_display="${C_CYAN}UDP Request${C_RESET}" ;;
-    esac
+    [[ "$cur_app" == "zivpn" ]] && app_display="${C_CYAN}ZiVPN${C_RESET}"
 
     echo
     echo -e "  ${C_DIM}Field${C_RESET}               ${C_DIM}Value${C_RESET}"
@@ -2320,15 +2166,7 @@ edit_user() {
         local _now_ts; printf -v _now_ts '%(%s)T' -1
         local _days_disp; _days_disp=$(_ff_days_left_str "$cur_expiry" "$_now_ts")
         local app_display="${C_CYAN}HTTP Custom${C_RESET}"
-        case "$cur_app" in
-            zivpn)       app_display="${C_CYAN}ZiVPN${C_RESET}" ;;
-            openvpn)     app_display="${C_CYAN}OpenVPN${C_RESET}" ;;
-            wireguard)   app_display="${C_CYAN}WireGuard${C_RESET}" ;;
-            hysteria2)   app_display="${C_CYAN}Hysteria2${C_RESET}" ;;
-            shadowsocks) app_display="${C_CYAN}ShadowSocks${C_RESET}" ;;
-            socks5)      app_display="${C_CYAN}SOCKS5${C_RESET}" ;;
-            udp_request) app_display="${C_CYAN}UDP Request${C_RESET}" ;;
-        esac
+        [[ "$cur_app" == "zivpn" ]] && app_display="${C_CYAN}ZiVPN${C_RESET}"
         echo -e "\n  ${C_DIM}Current: Pass=${C_YELLOW}$cur_pass${C_RESET}${C_DIM} Exp=${C_YELLOW}$cur_expiry${C_RESET}${C_DIM} (${C_CYAN}${_days_disp} left${C_RESET}${C_DIM}) Conn=${C_YELLOW}$cur_limit${C_RESET}${C_DIM} BW=${C_YELLOW}$cur_bw_display${C_RESET}${C_DIM} Used=${C_CYAN}$bw_used_display${C_RESET}"
         echo -e "  ${C_DIM}HWID=${C_RESET}${hwid_display}  ${C_DIM}App=${C_RESET}${app_display}"
         echo -e "\nSelect a detail to edit:\n"
@@ -2552,29 +2390,17 @@ edit_user() {
                        fi
                     fi
                 fi ;;
-              10) local new_app="$cur_app"
-                  echo -e "\n${C_DIM}Current target app: ${app_display}${C_RESET}"
-                  echo -e "${C_DIM}Select new application type:${C_RESET}"
-                  printf "  ${C_GREEN}[1]${C_RESET} %-16s\n" "HTTP Custom"
-                  printf "  ${C_GREEN}[2]${C_RESET} %-16s\n" "ZiVPN"
-                  printf "  ${C_GREEN}[3]${C_RESET} %-16s\n" "OpenVPN"
-                  printf "  ${C_GREEN}[4]${C_RESET} %-16s\n" "WireGuard"
-                  printf "  ${C_GREEN}[5]${C_RESET} %-16s\n" "Hysteria2"
-                  printf "  ${C_GREEN}[6]${C_RESET} %-16s\n" "ShadowSocks"
-                  printf "  ${C_GREEN}[7]${C_RESET} %-16s\n" "SOCKS5"
-                  printf "  ${C_GREEN}[8]${C_RESET} %-16s\n" "UDP Request"
-                  read -p "👉 App type [1]: " app_choice
-                  app_choice=${app_choice:-1}
-                  case "$app_choice" in
-                      2|z|Z|zivpn|ZiVPN)           new_app="zivpn" ;;
-                      3|o|O|openvpn|OpenVPN)       new_app="openvpn" ;;
-                      4|w|W|wireguard|WireGuard)   new_app="wireguard" ;;
-                      5|h|H|hysteria|Hysteria2)    new_app="hysteria2" ;;
-                      6|s|S|shadowsocks|ShadowSocks) new_app="shadowsocks" ;;
-                      7|socks5|SOCKS5)             new_app="socks5" ;;
-                      8|u|U|udp|UDP|udpreq|UDPReq) new_app="udp_request" ;;
-                      *)                           new_app="http" ;;
-                  esac
+             10) local new_app="$cur_app"
+                 echo -e "\n${C_DIM}Current target app: ${app_display}${C_RESET}"
+                 echo -e "${C_DIM}Select new application type:${C_RESET}"
+                 printf "  ${C_GREEN}[1]${C_RESET} HTTP Custom\n"
+                 printf "  ${C_GREEN}[2]${C_RESET} ZiVPN\n"
+                 read -p "👉 App type [1]: " app_choice
+                 app_choice=${app_choice:-1}
+                 case "$app_choice" in
+                     2|z|Z|zivpn|ZiVPN) new_app="zivpn" ;;
+                     *) new_app="http" ;;
+                 esac
                   db_set_user "$username" "$cur_pass" "$cur_expiry" "$cur_limit" "$cur_bw" "$cur_marker" "$cur_hwid" "$cur_strict" "$new_app"
                  # Sync ZiVPN auth list when app type changes.
                  if [[ "$new_app" != "$cur_app" ]]; then
@@ -2638,6 +2464,16 @@ _ff_kill_user_sessions() {
     pkill -9 -u "$user" &>/dev/null
 }
 
+# Restart udp-custom to forcibly drop a locked user's already-live UDP session.
+# udp-custom authenticates against the system shadow DB, so once usermod -L has
+# run the locked user cannot re-authenticate; other clients auto-reconnect after
+# the brief (~0.3s) restart. try-restart is a no-op when the service is stopped.
+# ZiVPN is intentionally excluded: it uses its own password list, not system
+# users, so a system-user lock has no bearing on it.
+_ff_fast_restart_udp() {
+    systemctl try-restart udp-custom.service 2>/dev/null
+}
+
 # --- Cross-protocol "very fast blip" UDP session kill -----------------------
 # UDP relays (udp-custom / zivpn / udpgw) run as root, so a locked user's LIVE
 # session is not user-owned and cannot be dropped by UID match or pkill. The only
@@ -2655,15 +2491,11 @@ _ff_udp_session_blip() {
     if command -v conntrack &>/dev/null; then
         for svc in "${targets[@]}"; do
             case "$svc" in
-                udp-custom)              port="$UDP_CUSTOM_LISTEN_PORT" ;;
-                zivpn)                   port="$ZIVPN_LISTEN_PORT" ;;
-                badvpn)                  port="$BADVPN_LISTEN_PORT" ;;
-                udpgw)                   port="" ;;  # localhost only, no external port to flush
-                hysteria-server)         port="$HYSTERIA2_PORT" ;;
-                shadowsocks-libev-server) port="$SHADOWSOCKS_PORT" ;;
-                slowudp)                 port="$SLOWUDP_PORT" ;;
-                udp-request)             port="$UDP_REQUEST_PORT" ;;
-                *)                       port="" ;;
+                udp-custom) port="$UDP_CUSTOM_LISTEN_PORT" ;;
+                zivpn)      port="$ZIVPN_LISTEN_PORT" ;;
+                badvpn)     port="$BADVPN_LISTEN_PORT" ;;
+                udpgw)      port="" ;;  # localhost only, no external port to flush
+                *)          port="" ;;
             esac
             [[ -n "$port" ]] && conntrack -D -p udp --dport "$port" &>/dev/null
         done
@@ -2748,10 +2580,6 @@ _ff_restore_user_all_protocols() {
         systemctl is-active --quiet zivpn 2>/dev/null && systemctl try-restart zivpn.service 2>/dev/null
     fi
     systemctl is-active --quiet udp-custom 2>/dev/null && systemctl try-restart udp-custom.service 2>/dev/null
-    systemctl is-active --quiet hysteria-server 2>/dev/null && systemctl try-restart hysteria-server 2>/dev/null
-    systemctl is-active --quiet shadowsocks-libev-server 2>/dev/null && systemctl try-restart shadowsocks-libev-server 2>/dev/null
-    systemctl is-active --quiet slowudp 2>/dev/null && systemctl try-restart slowudp 2>/dev/null
-    systemctl is-active --quiet udp-request 2>/dev/null && systemctl try-restart udp-request 2>/dev/null
 }
 
 lock_user() {
@@ -2791,10 +2619,6 @@ lock_user() {
         systemctl is-active --quiet udp-custom 2>/dev/null && blip+=(udp-custom)
         systemctl is-active --quiet badvpn 2>/dev/null && blip+=(badvpn)
         systemctl is-active --quiet udpgw 2>/dev/null && blip+=(udpgw)
-        systemctl is-active --quiet hysteria-server 2>/dev/null && blip+=(hysteria-server)
-        systemctl is-active --quiet shadowsocks-libev-server 2>/dev/null && blip+=(shadowsocks-libev-server)
-        systemctl is-active --quiet slowudp 2>/dev/null && blip+=(slowudp)
-        systemctl is-active --quiet udp-request 2>/dev/null && blip+=(udp-request)
         [[ "$zivpn_changed" == true ]] && blip+=(zivpn)
         if [[ ${#blip[@]} -gt 0 ]]; then
             echo -e "${C_DIM}⚡ Dropping live UDP sessions (fast blip: ${blip[*]})...${C_RESET}"
@@ -2830,12 +2654,8 @@ unlock_user() {
     if [[ "$zivpn_changed" == true ]] && systemctl is-active --quiet zivpn 2>/dev/null; then
         systemctl try-restart zivpn.service 2>/dev/null
     fi
-    # Restart UDP services to clear any stale auth cache from the lock period.
+    # Restart udp-custom to clear any stale shadow-auth cache from the lock period.
     systemctl is-active --quiet udp-custom 2>/dev/null && systemctl try-restart udp-custom.service 2>/dev/null
-    systemctl is-active --quiet hysteria-server 2>/dev/null && systemctl try-restart hysteria-server 2>/dev/null
-    systemctl is-active --quiet shadowsocks-libev-server 2>/dev/null && systemctl try-restart shadowsocks-libev-server 2>/dev/null
-    systemctl is-active --quiet slowudp 2>/dev/null && systemctl try-restart slowudp 2>/dev/null
-    systemctl is-active --quiet udp-request 2>/dev/null && systemctl try-restart udp-request 2>/dev/null
 }
 
 # Compact "days left until expiry" string for an expiry date (YYYY-MM-DD), given
@@ -2991,8 +2811,6 @@ renew_user() {
         _ff_restore_user_all_protocols "$u"
         echo -e " ✅ ${C_YELLOW}$u${C_RESET} renewed until ${C_GREEN}${new_expire_date}${C_RESET}."
     done
-    local _renewed="${SELECTED_USERS[*]}"
-    _send_telegram "🔔 <b>User(s) Renewed</b>%0A👤 $_renewed%0A🗓️ New expiry: $new_expire_date"
 }
 
 cleanup_expired() {
@@ -5019,7 +4837,7 @@ drop_ip() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - KICKED $ip (wrong HWID) for $who" >> "$KICK_LOG"
 }
 
-journalctl -u udp-custom -u zivpn -u hysteria-server -u shadowsocks-libev-server -u slowudp -u udp-request -n0 -f --no-pager 2>/dev/null | while IFS= read -r line; do
+journalctl -u udp-custom -u zivpn -n0 -f --no-pager 2>/dev/null | while IFS= read -r line; do
     # Only react to lines that look like a successful client connection.
     echo "$line" | grep -qiE 'client connected|user connected|accepted|authenticated|new session' || continue
 
@@ -5602,39 +5420,18 @@ refresh_banner_cache() {
     if [[ -z "$BANNER_CACHE_OS_NAME" ]]; then
         BANNER_CACHE_OS_NAME=$(grep -oP 'PRETTY_NAME="\K[^"]+' /etc/os-release 2>/dev/null || echo "Linux")
     fi
-    # Uptime: prefer /proc/uptime (kernel source, always present and reliable).
-    # Show weeks + days when up ≥ 24h, else hours + minutes. Fall back to
-    # parsing `uptime -p` only if /proc/uptime is unreadable (rare/minimal images).
-    local w=0 d=0 h=0 m=0 up_secs=""
-    if [[ -r /proc/uptime ]]; then
-        read -r up_secs _ < /proc/uptime
-        up_secs=${up_secs%.*}
-    fi
-    if [[ "$up_secs" =~ ^[0-9]+$ ]]; then
-        w=$(( up_secs / 604800 ))
-        d=$(( (up_secs % 604800) / 86400 ))
-        h=$(( (up_secs % 86400) / 3600 ))
-        m=$(( (up_secs % 3600) / 60 ))
-    else
-        local up_p; up_p=$(uptime -p 2>/dev/null | sed 's/up //' || echo "")
-        [[ "$up_p" =~ ([0-9]+)[[:space:]]*week ]]   && w=${BASH_REMATCH[1]}
-        [[ "$up_p" =~ ([0-9]+)[[:space:]]*day ]]    && d=${BASH_REMATCH[1]}
-        [[ "$up_p" =~ ([0-9]+)[[:space:]]*hour ]]   && h=${BASH_REMATCH[1]}
-        [[ "$up_p" =~ ([0-9]+)[[:space:]]*minute ]] && m=${BASH_REMATCH[1]}
-    fi
+    BANNER_CACHE_UP_TIME=$(uptime -p 2>/dev/null | sed 's/up //' || echo "unknown")
+    local w=0 d=0 h=0 m=0
+    if [[ "$BANNER_CACHE_UP_TIME" =~ ([0-9]+)[[:space:]]*week ]]; then w=${BASH_REMATCH[1]}; fi
+    if [[ "$BANNER_CACHE_UP_TIME" =~ ([0-9]+)[[:space:]]*day ]]; then d=${BASH_REMATCH[1]}; fi
+    if [[ "$BANNER_CACHE_UP_TIME" =~ ([0-9]+)[[:space:]]*hour ]]; then h=${BASH_REMATCH[1]}; fi
+    if [[ "$BANNER_CACHE_UP_TIME" =~ ([0-9]+)[[:space:]]*minute ]]; then m=${BASH_REMATCH[1]}; fi
     local parts=()
-    if (( w > 0 || d > 0 )); then
-        # ≥ 24h uptime → weeks + days
-        ((w)) && parts+=("${w}w")
-        ((d)) && parts+=("${d}d")
-    else
-        # < 24h uptime → hours + minutes
-        ((h)) && parts+=("${h}h")
-        ((m)) && parts+=("${m}m")
-    fi
-    local IFS=' '
+    ((w)) && parts+=("($w)wks")
+    ((d)) && parts+=("($d)days")
+    local IFS=,
     BANNER_CACHE_UP_TIME="${parts[*]}"
-    [[ -z "$BANNER_CACHE_UP_TIME" ]] && BANNER_CACHE_UP_TIME="just now"
+    [[ -z "$BANNER_CACHE_UP_TIME" ]] && BANNER_CACHE_UP_TIME="(0)days"
     BANNER_CACHE_RAM_USAGE=$(free -m | awk '/^Mem:/{if($2>0){printf "%.2f", $3*100/$2}else{print "0.00"}}')
     BANNER_CACHE_CPU_LOAD=$(awk '{print $1}' /proc/loadavg 2>/dev/null)
     if [[ -z "$BANNER_CACHE_IP" ]]; then
@@ -5713,45 +5510,6 @@ show_banner() {
         fi
         svc_lbl+=("FalconProxy:"); svc_val+=("$fp_ports")
     fi
-    if systemctl is-active --quiet dropbear; then
-        svc_lbl+=("Dropbear:"); svc_val+=("${DROPBEAR_PORTS}")
-    fi
-    if systemctl is-active --quiet openvpn; then
-        svc_lbl+=("OpenVPN:"); svc_val+=("${OPENVPN_TCP_PORT}, ${OPENVPN_UDP_PORT}")
-    fi
-    if systemctl is-active --quiet wg-quick@wg0; then
-        svc_lbl+=("WireGuard:"); svc_val+=("${WIREGUARD_PORT}")
-    fi
-    if systemctl is-active --quiet hysteria-server; then
-        svc_lbl+=("Hysteria:"); svc_val+=("${HYSTERIA1_PORT}/${HYSTERIA2_PORT}")
-    fi
-    if systemctl is-active --quiet shadowsocks-libev-server; then
-        svc_lbl+=("ShadowSocks:"); svc_val+=("${SHADOWSOCKS_PORT}")
-    fi
-    if systemctl is-active --quiet socks5; then
-        svc_lbl+=("Socks5:"); svc_val+=("${SOCKS5_PORT}")
-    fi
-    if systemctl is-active --quiet slowudp; then
-        svc_lbl+=("SlowUDP:"); svc_val+=("${SLOWUDP_PORT}")
-    fi
-    if systemctl is-active --quiet ohp; then
-        svc_lbl+=("OHP:"); svc_val+=("${OHP_PORT_1}/${OHP_PORT_2}/${OHP_PORT_3}")
-    fi
-    if systemctl is-active --quiet squid; then
-        svc_lbl+=("Squid:"); svc_val+=("${SQUID_PORT}")
-    fi
-    if systemctl is-active --quiet stunnel4; then
-        svc_lbl+=("Stunnel:"); svc_val+=("${STUNNEL_PORT}")
-    fi
-    if systemctl is-active --quiet udp-request; then
-        svc_lbl+=("UDP-Request:"); svc_val+=("${UDP_REQUEST_PORT}")
-    fi
-    if systemctl is-active --quiet argo-tunnel; then
-        svc_lbl+=("Argo:"); svc_val+=("${ARGO_TUNNEL_HTTP}, ${ARGO_TUNNEL_HTTPS}")
-    fi
-    if [[ -f /etc/systemd/system/rest-api.service ]] && systemctl is-active --quiet rest-api; then
-        svc_lbl+=("Rest API:"); svc_val+=("${REST_API_PORT}")
-    fi
     
     local i total=${#svc_lbl[@]}
     for ((i=0; i<total; i+=2)); do
@@ -5788,23 +5546,10 @@ protocol_menu() {
         fi
 
         local nginx_status; if systemctl is-active --quiet nginx; then nginx_status="${C_STATUS_A}(Active)${C_RESET}"; else nginx_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
-        local xui_status; if command -v x-ui &> /dev/null; then xui_status="${C_STATUS_A}(Installed)${C_RESET}"; else xui_status="${C_STATUS_I}(Not Installed)${C_RESET}"; fi
-
-        local dropbear_status; if systemctl is-active --quiet dropbear 2>/dev/null; then dropbear_status="${C_STATUS_A}(Active)${C_RESET}"; else dropbear_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
-        local openvpn_status; if systemctl is-active --quiet openvpn 2>/dev/null; then openvpn_status="${C_STATUS_A}(Active)${C_RESET}"; else openvpn_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
-        local wg_status; if systemctl is-active --quiet wg-quick@wg0 2>/dev/null; then wg_status="${C_STATUS_A}(Active)${C_RESET}"; else wg_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
-        local hysteria_status; if systemctl is-active --quiet hysteria-server 2>/dev/null; then hysteria_status="${C_STATUS_A}(Active)${C_RESET}"; else hysteria_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
-        local ss_status; if systemctl is-active --quiet shadowsocks-libev-server 2>/dev/null; then ss_status="${C_STATUS_A}(Active)${C_RESET}"; else ss_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
-        local socks5_status; if systemctl is-active --quiet socks5 2>/dev/null; then socks5_status="${C_STATUS_A}(Active)${C_RESET}"; else socks5_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
-        local slowudp_status; if systemctl is-active --quiet slowudp 2>/dev/null; then slowudp_status="${C_STATUS_A}(Active)${C_RESET}"; else slowudp_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
-        local ohp_status; if systemctl is-active --quiet ohp 2>/dev/null; then ohp_status="${C_STATUS_A}(Active)${C_RESET}"; else ohp_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
-        local squid_status; if systemctl is-active --quiet squid 2>/dev/null; then squid_status="${C_STATUS_A}(Active)${C_RESET}"; else squid_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
-        local stunnel_status; if systemctl is-active --quiet stunnel4 2>/dev/null; then stunnel_status="${C_STATUS_A}(Active)${C_RESET}"; else stunnel_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
-        local udp_req_status; if systemctl is-active --quiet udp-request 2>/dev/null; then udp_req_status="${C_STATUS_A}(Active)${C_RESET}"; else udp_req_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
-        local argo_status; if systemctl is-active --quiet argo-tunnel 2>/dev/null; then argo_status="${C_STATUS_A}(Active)${C_RESET}"; else argo_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
+        local xui_status; if command -v x-ui &> /dev/null; then xui_status="${C_STATUS_A}(Installed)${C_RESET}"; else xui_status="${C_STATUS_I}(Not Installed)${C_RESET}"; fi  # 3X-UI uses same 'x-ui' binary name
         
         echo -e "\n   ${C_TITLE}══════════════[ ${C_BOLD}🔌 PROTOCOL & PANEL MANAGEMENT ${C_RESET}${C_TITLE}]══════════════${C_RESET}"
-        echo -e "     ${C_ACCENT}--- EXISTING PROTOCOLS ---${C_RESET}"
+        echo -e "     ${C_ACCENT}--- TUNNELLING PROTOCOLS---${C_RESET}"
         printf "     ${C_CHOICE}[ 1]${C_RESET} %-45s %s\n" "🚀 Install badvpn (UDP 7300)" "$badvpn_status"
         printf "     ${C_CHOICE}[ 2]${C_RESET} %-45s\n" "🗑️ Uninstall badvpn"
         printf "     ${C_CHOICE}[ 3]${C_RESET} %-45s %s\n" "🚀 Install udp-custom" "$udp_custom_status"
@@ -5816,41 +5561,15 @@ protocol_menu() {
         printf "     ${C_CHOICE}[ 9]${C_RESET} %-45s %s\n" "🦅 Install Falcon Proxy (Select Version)" "$falconproxy_status"
         printf "     ${C_CHOICE}[10]${C_RESET} %-45s\n" "🗑️ Uninstall Falcon Proxy"
         printf "     ${C_CHOICE}[11]${C_RESET} %-45s %s\n" "🌐 Install/Manage Internal Nginx (8880/8443)" "$nginx_status"
-        printf "     ${C_CHOICE}[12]${C_RESET} %-45s %s\n" "🛡️ Install ZiVPN (UDP 5667)" "$zivpn_status"
-        printf "     ${C_CHOICE}[13]${C_RESET} %-45s\n" "🗑️ Uninstall ZiVPN"
+        printf "     ${C_CHOICE}[14]${C_RESET} %-45s %s\n" "🛡️ Install ZiVPN (UDP 5667)" "$zivpn_status"
+        printf "     ${C_CHOICE}[15]${C_RESET} %-45s\n" "🗑️ Uninstall ZiVPN"
         local hwid_status; if systemctl is-active --quiet skylartech-hwid-enforcer 2>/dev/null; then hwid_status="${C_STATUS_A}(On)${C_RESET}"; else hwid_status="${C_STATUS_I}(Off)${C_RESET}"; fi
-        printf "     ${C_CHOICE}[14]${C_RESET} %-45s %s\n" "🔒 HWID Lock (udp-custom + ZiVPN + SlowUDP + UDP-Req)" "$hwid_status"
-        printf "     ${C_CHOICE}[15]${C_RESET} %-45s\n" "🚀 Exclude Ports (udp-custom / DNSTT toggle)"
-        
-        echo -e "     ${C_ACCENT}--- NEW PROTOCOLS ---${C_RESET}"
-        printf "     ${C_CHOICE}[20]${C_RESET} %-45s %s\n" "🦘 Install Dropbear (109, 143)" "$dropbear_status"
-        printf "     ${C_CHOICE}[21]${C_RESET} %-45s\n" "🗑️ Uninstall Dropbear"
-        printf "     ${C_CHOICE}[22]${C_RESET} %-45s %s\n" "🛡️ Install OpenVPN (1194/2200/25000)" "$openvpn_status"
-        printf "     ${C_CHOICE}[23]${C_RESET} %-45s\n" "🗑️ Uninstall OpenVPN"
-        printf "     ${C_CHOICE}[24]${C_RESET} %-45s %s\n" "🔗 Install WireGuard (51820)" "$wg_status"
-        printf "     ${C_CHOICE}[25]${C_RESET} %-45s\n" "🗑️ Uninstall WireGuard"
-        printf "     ${C_CHOICE}[26]${C_RESET} %-45s %s\n" "🌪️ Install Hysteria 1/2" "$hysteria_status"
-        printf "     ${C_CHOICE}[27]${C_RESET} %-45s\n" "🗑️ Uninstall Hysteria"
-        printf "     ${C_CHOICE}[28]${C_RESET} %-45s %s\n" "📡 Install ShadowSocks (2443, 3443)" "$ss_status"
-        printf "     ${C_CHOICE}[29]${C_RESET} %-45s\n" "🗑️ Uninstall ShadowSocks"
-        printf "     ${C_CHOICE}[30]${C_RESET} %-45s %s\n" "🧦 Install Socks5 Proxy (1080)" "$socks5_status"
-        printf "     ${C_CHOICE}[31]${C_RESET} %-45s\n" "🗑️ Uninstall Socks5 Proxy"
-        printf "     ${C_CHOICE}[32]${C_RESET} %-45s %s\n" "🐢 Install SlowUDP" "$slowudp_status"
-        printf "     ${C_CHOICE}[33]${C_RESET} %-45s\n" "🗑️ Uninstall SlowUDP"
-        printf "     ${C_CHOICE}[34]${C_RESET} %-45s %s\n" "🌉 Install OHP (8181/8282/8383)" "$ohp_status"
-        printf "     ${C_CHOICE}[35]${C_RESET} %-45s\n" "🗑️ Uninstall OHP"
-        printf "     ${C_CHOICE}[36]${C_RESET} %-45s %s\n" "🐙 Install Squid Proxy (3128)" "$squid_status"
-        printf "     ${C_CHOICE}[37]${C_RESET} %-45s\n" "🗑️ Uninstall Squid Proxy"
-        printf "     ${C_CHOICE}[38]${C_RESET} %-45s %s\n" "🔒 Install Stunnel (777)" "$stunnel_status"
-        printf "     ${C_CHOICE}[39]${C_RESET} %-45s\n" "🗑️ Uninstall Stunnel"
-        printf "     ${C_CHOICE}[40]${C_RESET} %-45s %s\n" "📦 Install UDP Request" "$udp_req_status"
-        printf "     ${C_CHOICE}[41]${C_RESET} %-45s\n" "🗑️ Uninstall UDP Request"
-        printf "     ${C_CHOICE}[42]${C_RESET} %-45s %s\n" "☁️ Install Argo Tunnel" "$argo_status"
-        printf "     ${C_CHOICE}[43]${C_RESET} %-45s\n" "🗑️ Uninstall Argo Tunnel"
+        printf "     ${C_CHOICE}[16]${C_RESET} %-45s %s\n" "🔒 HWID Lock Enforcement (udp-custom + ZiVPN)" "$hwid_status"
+        printf "     ${C_CHOICE}[17]${C_RESET} %-45s\n" "🚀 Exclude Ports (udp-custom / DNSTT toggle)"
         
         echo -e "     ${C_ACCENT}--- 💻 MANAGEMENT PANELS ---${C_RESET}"
-        printf "     ${C_CHOICE}[16]${C_RESET} %-45s %s\n" "💻 Install X-UI / 3X-UI Panel" "$xui_status"
-        printf "     ${C_CHOICE}[17]${C_RESET} %-45s\n" "🗑️ Uninstall X-UI / 3X-UI Panel"
+        printf "     ${C_CHOICE}[12]${C_RESET} %-45s %s\n" "💻 Install X-UI / 3X-UI Panel" "$xui_status"
+        printf "     ${C_CHOICE}[13]${C_RESET} %-45s\n" "🗑️ Uninstall X-UI / 3X-UI Panel"
         
         echo -e "   ${C_DIM}~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~${C_RESET}"
         echo -e "     ${C_WARN}[ 0]${C_RESET} ↩️ Return"
@@ -5866,22 +5585,10 @@ protocol_menu() {
             7) install_dnstt; press_enter ;; 8) uninstall_dnstt; press_enter ;;
             9) install_falcon_proxy; press_enter ;; 10) uninstall_falcon_proxy; press_enter ;;
             11) nginx_proxy_menu ;;
-            12) install_zivpn; press_enter ;; 13) uninstall_zivpn; press_enter ;;
-            14) hwid_lock_menu ;;
-            15) manage_udp_custom_exclude; press_enter ;;
-            16) install_panel_menu; press_enter ;; 17) uninstall_xui_panel; press_enter ;;
-            20) install_dropbear; press_enter ;; 21) uninstall_dropbear; press_enter ;;
-            22) install_openvpn; press_enter ;; 23) uninstall_openvpn; press_enter ;;
-            24) install_wireguard; press_enter ;; 25) uninstall_wireguard; press_enter ;;
-            26) install_hysteria; press_enter ;; 27) uninstall_hysteria; press_enter ;;
-            28) install_shadowsocks; press_enter ;; 29) uninstall_shadowsocks; press_enter ;;
-            30) install_socks5; press_enter ;; 31) uninstall_socks5; press_enter ;;
-            32) install_slowudp; press_enter ;; 33) uninstall_slowudp; press_enter ;;
-            34) install_ohp; press_enter ;; 35) uninstall_ohp; press_enter ;;
-            36) install_squid; press_enter ;; 37) uninstall_squid; press_enter ;;
-            38) install_stunnel; press_enter ;; 39) uninstall_stunnel; press_enter ;;
-            40) install_udp_request; press_enter ;; 41) uninstall_udp_request; press_enter ;;
-            42) install_argo_tunnel; press_enter ;; 43) uninstall_argo_tunnel; press_enter ;;
+            12) install_panel_menu; press_enter ;; 13) uninstall_xui_panel; press_enter ;;
+            14) install_zivpn; press_enter ;; 15) uninstall_zivpn; press_enter ;;
+            16) hwid_lock_menu ;;
+            17) manage_udp_custom_exclude; press_enter ;;
             0) return ;;
             *) invalid_option ;;
         esac
@@ -5891,8 +5598,6 @@ protocol_menu() {
 set_domain() {
     echo
     echo -e "${C_TITLE}--- 🌐 Set Custom Domain ---${C_RESET}"
-    echo -e "${C_DIM}💡 Don't have a domain? Use DuckDNS (Integrations → option 3) to get a${C_RESET}"
-    echo -e "${C_DIM}   free subdomain like ${C_CYAN}yourname.duckdns.org${C_RESET}"
     echo
     local current=""
     if [[ -f "$DOMAIN_OVERRIDE_FILE" ]]; then
@@ -5978,19 +5683,6 @@ uninstall_script() {
     uninstall_ssl_tunnel
     uninstall_falcon_proxy
     uninstall_zivpn
-    uninstall_dropbear 2>/dev/null
-    uninstall_openvpn 2>/dev/null
-    uninstall_wireguard 2>/dev/null
-    uninstall_hysteria 2>/dev/null
-    uninstall_shadowsocks 2>/dev/null
-    uninstall_socks5 2>/dev/null
-    uninstall_slowudp 2>/dev/null
-    uninstall_ohp 2>/dev/null
-    uninstall_squid 2>/dev/null
-    uninstall_stunnel 2>/dev/null
-    uninstall_udp_request 2>/dev/null
-    uninstall_argo_tunnel 2>/dev/null
-    systemctl stop rest-api 2>/dev/null; systemctl disable rest-api 2>/dev/null
     echo -e "\n${C_BLUE}🗑️ Removing HWID lock enforcer...${C_RESET}"
     systemctl stop skylartech-hwid-enforcer &>/dev/null
     systemctl disable skylartech-hwid-enforcer &>/dev/null
@@ -6004,9 +5696,6 @@ uninstall_script() {
     rm -rf "$BADVPN_BUILD_DIR"
     rm -rf "$UDP_CUSTOM_DIR"
     # Back up user database before removal so a reinstall can restore it.
-    echo -e "\n${C_BLUE}🗑️ Removing DuckDNS auto-update cron...${C_RESET}"
-    crontab -l 2>/dev/null | grep -v "duckdns.org/update" | crontab - 2>/dev/null && echo -e "${C_GREEN}✅ DuckDNS cron removed${C_RESET}" || true
-
     if [[ -d "$DB_DIR" ]]; then
         local _db_backup="/etc/.skylartech-db-backup"
         rm -rf "$_db_backup" 2>/dev/null
@@ -6107,25 +5796,13 @@ create_trial_account() {
     # App type selector
     local app="http"
     echo -e "\n${C_DIM}Select target application:${C_RESET}"
-    printf "  ${C_GREEN}[1]${C_RESET} %-16s ${C_DIM}(HTTP Custom)${C_RESET}\n" "HTTP Custom"
-    printf "  ${C_GREEN}[2]${C_RESET} %-16s ${C_DIM}(ZiVPN)${C_RESET}\n" "ZiVPN"
-    printf "  ${C_GREEN}[3]${C_RESET} %-16s ${C_DIM}(OpenVPN)${C_RESET}\n" "OpenVPN"
-    printf "  ${C_GREEN}[4]${C_RESET} %-16s ${C_DIM}(WireGuard)${C_RESET}\n" "WireGuard"
-    printf "  ${C_GREEN}[5]${C_RESET} %-16s ${C_DIM}(Hysteria2 / HWID)${C_RESET}\n" "Hysteria2"
-    printf "  ${C_GREEN}[6]${C_RESET} %-16s ${C_DIM}(ShadowSocks / HWID)${C_RESET}\n" "ShadowSocks"
-    printf "  ${C_GREEN}[7]${C_RESET} %-16s ${C_DIM}(SOCKS5 / PAM)${C_RESET}\n" "SOCKS5"
-    printf "  ${C_GREEN}[8]${C_RESET} %-16s ${C_DIM}(UDP Request / HWID)${C_RESET}\n" "UDP Request"
+    printf "  ${C_GREEN}[1]${C_RESET} %-15s ${C_DIM}(HTTP Custom)${C_RESET}\n" "HTTP Custom"
+    printf "  ${C_GREEN}[2]${C_RESET} %-15s ${C_DIM}(ZiVPN)${C_RESET}\n" "ZiVPN"
     read -p "👉 App type [1]: " app_choice
     app_choice=${app_choice:-1}
     case "$app_choice" in
-        2|z|Z|zivpn|ZiVPN)           app="zivpn" ;;
-        3|o|O|openvpn|OpenVPN)       app="openvpn" ;;
-        4|w|W|wireguard|WireGuard)   app="wireguard" ;;
-        5|h|H|hysteria|Hysteria2)    app="hysteria2" ;;
-        6|s|S|shadowsocks|ShadowSocks) app="shadowsocks" ;;
-        7|socks5|SOCKS5)             app="socks5" ;;
-        8|u|U|udp|UDP|udpreq|UDPReq) app="udp_request" ;;
-        *)                           app="http" ;;
+        2|z|Z|zivpn|ZiVPN) app="zivpn" ;;
+        *) app="http" ;;
     esac
 
     # Calculate expiry
@@ -6151,6 +5828,9 @@ create_trial_account() {
     echo "$username:$password:$expire_date:$limit:$bandwidth_gb:trial::0:$app" >> "$DB_FILE"
 
     if [[ "$app" == "zivpn" ]]; then
+        # Make sure the password lands in ZiVPN's auth list. _ff_zivpn_add_pass
+        # silently no-ops when jq or config.json are missing, so warn the admin
+        # rather than leave them thinking the ZiVPN account works when it can't.
         if ! command -v jq &>/dev/null; then
             echo -e "${C_YELLOW}⚠️ 'jq' not installed — could not add password to ZiVPN config. Install jq, then re-add.${C_RESET}"
         elif [[ ! -f "$ZIVPN_CONFIG_FILE" ]]; then
@@ -6158,109 +5838,6 @@ create_trial_account() {
         elif _ff_zivpn_add_pass "$password"; then
             systemctl is-active --quiet zivpn 2>/dev/null && systemctl try-restart zivpn.service 2>/dev/null
         fi
-    fi
-
-    # ── OpenVPN per-user config ──
-    if [[ "$app" == "openvpn" && -d /etc/openvpn/easy-rsa/pki ]]; then
-        local _ovpn_ip; _ovpn_ip=$(curl -s -4 icanhazip.com 2>/dev/null || echo "SERVER_IP")
-        cd /etc/openvpn/easy-rsa 2>/dev/null && EASYRSA_BATCH=1 ./easyrsa build-client-full "$username" nopass 2>/dev/null
-        local _ovpn_file="$EXPORTS_DIR/${username}.ovpn"
-        mkdir -p "$EXPORTS_DIR" 2>/dev/null
-        cat > "$_ovpn_file" <<OVPNEOF
-client
-dev tun
-proto tcp
-remote ${_ovpn_ip} ${OPENVPN_TCP_PORT}
-<connection>
-remote ${_ovpn_ip} ${OPENVPN_UDP_PORT}
-proto udp
-</connection>
-<connection>
-remote ${_ovpn_ip} ${OPENVPN_SDNS_PORT}
-proto udp
-</connection>
-resolv-retry infinite
-nobind
-persist-key
-persist-tun
-auth SHA256
-cipher AES-256-GCM
-data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305
-auth-user-pass
-<ca>
-$(cat /etc/openvpn/easy-rsa/pki/ca.crt 2>/dev/null)
-</ca>
-<cert>
-$(cat /etc/openvpn/easy-rsa/pki/issued/${username}.crt 2>/dev/null)
-</cert>
-<key>
-$(cat /etc/openvpn/easy-rsa/pki/private/${username}.key 2>/dev/null)
-</key>
-<tls-auth>
-$(cat /etc/openvpn/ta.key 2>/dev/null)
-</tls-auth>
-key-direction 1
-OVPNEOF
-        echo -e "\n${C_GREEN}✅ OpenVPN config generated: ${C_YELLOW}$_ovpn_file${C_RESET}"
-    fi
-
-    # ── WireGuard per-user config ──
-    if [[ "$app" == "wireguard" && -f /etc/wireguard/wg0.conf ]]; then
-        local _wg_ip; _wg_ip=$(curl -s -4 icanhazip.com 2>/dev/null || echo "SERVER_IP")
-        local _wg_priv; _wg_priv=$(wg genkey)
-        local _wg_pub; _wg_pub=$(echo "$_wg_priv" | wg pubkey)
-        local _wg_srv_pub; _wg_srv_pub=$(cat /etc/wireguard/server.pub 2>/dev/null)
-        local _wg_file="$EXPORTS_DIR/${username}.conf"
-        mkdir -p "$EXPORTS_DIR" 2>/dev/null
-        local _wg_octet=2
-        local _wg_last; _wg_last=$(grep -oP '10\.66\.66\.\d+' /etc/wireguard/wg0.conf 2>/dev/null | sort -t. -k4 -n | tail -1)
-        [[ -n "$_wg_last" ]] && _wg_octet=$((${_wg_last##*.} + 1))
-        local _wg_addr="10.66.66.${_wg_octet}"
-        cat >> /etc/wireguard/wg0.conf <<WGPEOF
-# BEGIN ${username}
-[Peer]
-PublicKey = ${_wg_pub}
-AllowedIPs = ${_wg_addr}/32
-# END ${username}
-WGPEOF
-        cat > "$_wg_file" <<WGCEOF
-[Interface]
-PrivateKey = ${_wg_priv}
-Address = ${_wg_addr}/24
-DNS = 8.8.8.8, 1.1.1.1
-[Peer]
-PublicKey = ${_wg_srv_pub}
-Endpoint = ${_wg_ip}:${WIREGUARD_PORT}
-AllowedIPs = 0.0.0.0/0
-PersistentKeepalive = 25
-WGCEOF
-        wg-quick down wg0 2>/dev/null; wg-quick up wg0 2>/dev/null
-        echo -e "\n${C_GREEN}✅ WireGuard config generated: ${C_YELLOW}$_wg_file${C_RESET}"
-    fi
-
-    # ── Hysteria2 per-user config ──
-    if [[ "$app" == "hysteria2" && -f /etc/hysteria/config.json ]] && command -v jq &>/dev/null; then
-        local _hy_ip; _hy_ip=$(curl -s -4 icanhazip.com 2>/dev/null || echo "SERVER_IP")
-        local _hy_file="$EXPORTS_DIR/${username}-hysteria.json"
-        mkdir -p "$EXPORTS_DIR" 2>/dev/null
-        local _tmp; _tmp=$(mktemp) 2>/dev/null || true
-        if [[ -n "$_tmp" ]]; then
-            jq --arg u "$username" --arg p "$password" '.auth.config += [{"user": $u, "pass": $p}]' /etc/hysteria/config.json > "$_tmp" 2>/dev/null && mv "$_tmp" /etc/hysteria/config.json
-            rm -f "$_tmp" 2>/dev/null
-        fi
-        cat > "$_hy_file" <<HYCEOF
-{
-  "server": "${_hy_ip}:${HYSTERIA2_PORT}",
-  "auth": "${password}",
-  "tls": { "sni": "${_hy_ip}", "insecure": true },
-  "quic": { "initStreamReceiveWindow": 8388608, "maxIdleTimeout": "30s", "keepAliveInterval": "10s" },
-  "fastOpen": true,
-  "lazy": true,
-  "socks5": { "listen": "127.0.0.1:1080" }
-}
-HYCEOF
-        systemctl restart hysteria-server 2>/dev/null
-        echo -e "\n${C_GREEN}✅ Hysteria2 config generated: ${C_YELLOW}$_hy_file${C_RESET}"
     fi
 
     # Record the precise expiry epoch so the limiter can enforce sub-day
@@ -6384,25 +5961,13 @@ bulk_create_users() {
     # App type for all bulk users
     local app="http"
     echo -e "\n${C_DIM}Select target application for all users:${C_RESET}"
-    printf "  ${C_GREEN}[1]${C_RESET} %-16s ${C_DIM}(HTTP Custom)${C_RESET}\n" "HTTP Custom"
-    printf "  ${C_GREEN}[2]${C_RESET} %-16s ${C_DIM}(ZiVPN)${C_RESET}\n" "ZiVPN"
-    printf "  ${C_GREEN}[3]${C_RESET} %-16s ${C_DIM}(OpenVPN)${C_RESET}\n" "OpenVPN"
-    printf "  ${C_GREEN}[4]${C_RESET} %-16s ${C_DIM}(WireGuard)${C_RESET}\n" "WireGuard"
-    printf "  ${C_GREEN}[5]${C_RESET} %-16s ${C_DIM}(Hysteria2 / HWID)${C_RESET}\n" "Hysteria2"
-    printf "  ${C_GREEN}[6]${C_RESET} %-16s ${C_DIM}(ShadowSocks / HWID)${C_RESET}\n" "ShadowSocks"
-    printf "  ${C_GREEN}[7]${C_RESET} %-16s ${C_DIM}(SOCKS5 / PAM)${C_RESET}\n" "SOCKS5"
-    printf "  ${C_GREEN}[8]${C_RESET} %-16s ${C_DIM}(UDP Request / HWID)${C_RESET}\n" "UDP Request"
+    printf "  ${C_GREEN}[1]${C_RESET} %-15s ${C_DIM}(HTTP Custom)${C_RESET}\n" "HTTP Custom"
+    printf "  ${C_GREEN}[2]${C_RESET} %-15s ${C_DIM}(ZiVPN)${C_RESET}\n" "ZiVPN"
     read -p "👉 App type [1]: " app_choice
     app_choice=${app_choice:-1}
     case "$app_choice" in
-        2|z|Z|zivpn|ZiVPN)           app="zivpn" ;;
-        3|o|O|openvpn|OpenVPN)       app="openvpn" ;;
-        4|w|W|wireguard|WireGuard)   app="wireguard" ;;
-        5|h|H|hysteria|Hysteria2)    app="hysteria2" ;;
-        6|s|S|shadowsocks|ShadowSocks) app="shadowsocks" ;;
-        7|socks5|SOCKS5)             app="socks5" ;;
-        8|u|U|udp|UDP|udpreq|UDPReq) app="udp_request" ;;
-        *)                           app="http" ;;
+        2|z|Z|zivpn|ZiVPN) app="zivpn" ;;
+        *) app="http" ;;
     esac
 
     local expire_date
@@ -6431,113 +5996,12 @@ bulk_create_users() {
         if [[ "$app" == "zivpn" ]]; then
             _ff_zivpn_add_pass "$password"
         fi
-        # ── OpenVPN per-user config ──
-        if [[ "$app" == "openvpn" && -d /etc/openvpn/easy-rsa/pki ]]; then
-            local _ovpn_ip; _ovpn_ip=$(curl -s -4 icanhazip.com 2>/dev/null || echo "SERVER_IP")
-            cd /etc/openvpn/easy-rsa 2>/dev/null && EASYRSA_BATCH=1 ./easyrsa build-client-full "$username" nopass 2>/dev/null
-            local _ovpn_file="$EXPORTS_DIR/${username}.ovpn"
-            mkdir -p "$EXPORTS_DIR" 2>/dev/null
-            cat > "$_ovpn_file" <<OVPNEOF
-client
-dev tun
-proto tcp
-remote ${_ovpn_ip} ${OPENVPN_TCP_PORT}
-<connection>
-remote ${_ovpn_ip} ${OPENVPN_UDP_PORT}
-proto udp
-</connection>
-<connection>
-remote ${_ovpn_ip} ${OPENVPN_SDNS_PORT}
-proto udp
-</connection>
-resolv-retry infinite
-nobind
-persist-key
-persist-tun
-auth SHA256
-cipher AES-256-GCM
-data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305
-auth-user-pass
-<ca>
-$(cat /etc/openvpn/easy-rsa/pki/ca.crt 2>/dev/null)
-</ca>
-<cert>
-$(cat /etc/openvpn/easy-rsa/pki/issued/${username}.crt 2>/dev/null)
-</cert>
-<key>
-$(cat /etc/openvpn/easy-rsa/pki/private/${username}.key 2>/dev/null)
-</key>
-<tls-auth>
-$(cat /etc/openvpn/ta.key 2>/dev/null)
-</tls-auth>
-key-direction 1
-OVPNEOF
-        fi
-        # ── WireGuard per-user config ──
-        if [[ "$app" == "wireguard" && -f /etc/wireguard/wg0.conf ]]; then
-            local _wg_ip; _wg_ip=$(curl -s -4 icanhazip.com 2>/dev/null || echo "SERVER_IP")
-            local _wg_priv; _wg_priv=$(wg genkey)
-            local _wg_pub; _wg_pub=$(echo "$_wg_priv" | wg pubkey)
-            local _wg_srv_pub; _wg_srv_pub=$(cat /etc/wireguard/server.pub 2>/dev/null)
-            local _wg_file="$EXPORTS_DIR/${username}.conf"
-            mkdir -p "$EXPORTS_DIR" 2>/dev/null
-            local _wg_octet=2
-            local _wg_last; _wg_last=$(grep -oP '10\.66\.66\.\d+' /etc/wireguard/wg0.conf 2>/dev/null | sort -t. -k4 -n | tail -1)
-            [[ -n "$_wg_last" ]] && _wg_octet=$((${_wg_last##*.} + 1))
-            local _wg_addr="10.66.66.${_wg_octet}"
-            cat >> /etc/wireguard/wg0.conf <<WGPEOF
-# BEGIN ${username}
-[Peer]
-PublicKey = ${_wg_pub}
-AllowedIPs = ${_wg_addr}/32
-# END ${username}
-WGPEOF
-            cat > "$_wg_file" <<WGCEOF
-[Interface]
-PrivateKey = ${_wg_priv}
-Address = ${_wg_addr}/24
-DNS = 8.8.8.8, 1.1.1.1
-[Peer]
-PublicKey = ${_wg_srv_pub}
-Endpoint = ${_wg_ip}:${WIREGUARD_PORT}
-AllowedIPs = 0.0.0.0/0
-PersistentKeepalive = 25
-WGCEOF
-        fi
-        # ── Hysteria2 per-user config ──
-        if [[ "$app" == "hysteria2" && -f /etc/hysteria/config.json ]] && command -v jq &>/dev/null; then
-            local _hy_ip; _hy_ip=$(curl -s -4 icanhazip.com 2>/dev/null || echo "SERVER_IP")
-            local _hy_file="$EXPORTS_DIR/${username}-hysteria.json"
-            mkdir -p "$EXPORTS_DIR" 2>/dev/null
-            local _tmp; _tmp=$(mktemp) 2>/dev/null || true
-            if [[ -n "$_tmp" ]]; then
-                jq --arg u "$username" --arg p "$password" '.auth.config += [{"user": $u, "pass": $p}]' /etc/hysteria/config.json > "$_tmp" 2>/dev/null && mv "$_tmp" /etc/hysteria/config.json
-                rm -f "$_tmp" 2>/dev/null
-            fi
-            cat > "$_hy_file" <<HYCEOF
-{
-  "server": "${_hy_ip}:${HYSTERIA2_PORT}",
-  "auth": "${password}",
-  "tls": { "sni": "${_hy_ip}", "insecure": true },
-  "quic": { "initStreamReceiveWindow": 8388608, "maxIdleTimeout": "30s", "keepAliveInterval": "10s" },
-  "fastOpen": true,
-  "lazy": true,
-  "socks5": { "listen": "127.0.0.1:1080" }
-}
-HYCEOF
-        fi
         printf "  ${C_GREEN}%-20s${C_RESET} | ${C_YELLOW}%-15s${C_RESET} | ${C_CYAN}%-12s${C_RESET}\n" "$username" "$password" "$expire_date"
         created=$((created + 1))
     done
 
     if [[ "$app" == "zivpn" ]]; then
         systemctl is-active --quiet zivpn 2>/dev/null && systemctl try-restart zivpn.service 2>/dev/null
-    fi
-    if [[ "$app" == "wireguard" && -f /etc/wireguard/wg0.conf ]]; then
-        wg-quick down wg0 2>/dev/null; wg-quick up wg0 2>/dev/null
-    fi
-    if [[ "$app" == "hysteria2" && -f /etc/hysteria/config.json ]]; then
-        systemctl try-restart hysteria-server 2>/dev/null
     fi
 
     echo -e "${C_YELLOW}================================================================${C_RESET}"
@@ -7473,27 +6937,10 @@ nat_forward_menu() {
 }
 
 press_enter() {
-    echo
-    echo -e "   ${C_DIM}───────────────────────────────────────────────────${C_RESET}"
-    echo -e "     ${C_WARN}[ 0]${C_RESET} ↩️  Press ${C_YELLOW}[Enter]${C_RESET} to go back"
-    echo -e "   ${C_DIM}───────────────────────────────────────────────────${C_RESET}"
-    read -r || true
+    echo -e "\nPress ${C_YELLOW}[Enter]${C_RESET} to return to the menu..." && read -r || true
 }
 invalid_option() {
     echo -e "\n${C_RED}❌ Invalid option.${C_RESET}" && sleep 1
-}
-
-# ── Clustered submenu (hub) render helpers ─────────────────────────────────
-# Shared look for all top-level hubs so grouped tools feel consistent & premium.
-_hub_header() {
-    echo -e "\n   ${C_TITLE}═══════════════[ ${C_BOLD}$1${C_RESET}${C_TITLE} ]═══════════════${C_RESET}\n"
-}
-_hub_item() { # $1 num  $2 label  $3 description
-    printf "     ${C_CHOICE}[%2s]${C_RESET} %-24s ${C_DIM}%s${C_RESET}\n" "$1" "$2" "$3"
-}
-_hub_footer() {
-    echo -e "\n   ${C_DIM}───────────────────────────────────────────────────${C_RESET}"
-    echo -e "     ${C_WARN}[ 0]${C_RESET} ↩️  Back to Main Menu\n"
 }
 
 # Resync all ZiVPN passwords from the local DB into /etc/zivpn/config.json.
@@ -7539,177 +6986,31 @@ zivpn_resync_passwords() {
     fi
 }
 
-# ═══════════════════════════════════════════════════════════
-# CLUSTERED MANAGEMENT HUBS
-# Each hub groups related tools behind one main-menu entry so the
-# top-level screen stays short. Every hub shows [0] Back to Main Menu.
-# ═══════════════════════════════════════════════════════════
-
-more_users_hub() {
-    while true; do
-        show_banner
-        _hub_header "➕ MORE USER TOOLS"
-        _hub_item "1" "⏱️  Trial Account"   "Create a time-limited trial user"
-        _hub_item "2" "👥 Bulk Users"        "Create many users at once"
-        _hub_item "3" "💾 Backup Users"      "Export the user database"
-        _hub_item "4" "📥 Restore Users"     "Import users from a backup"
-        _hub_item "5" "🧹 Cleanup Expired"   "Remove expired accounts"
-        _hub_footer
-        read -r -p "$(echo -e ${C_PROMPT}"👉 Select an option: "${C_RESET})" choice || return
-        case $choice in
-            1) create_trial_account; press_enter ;;
-            2) bulk_create_users; press_enter ;;
-            3) backup_user_data; press_enter ;;
-            4) restore_user_data; press_enter ;;
-            5) cleanup_expired; press_enter ;;
-            0) return ;;
-            *) invalid_option ;;
-        esac
-    done
-}
-
-protocols_hub() {
-    while true; do
-        show_banner
-        _hub_header "🔌 PROTOCOLS & SERVICES"
-        _hub_item "1" "🔌 Protocol Manager"  "Install/manage VPN protocols & panels"
-        _hub_item "2" "🔛 ON/OFF Service"     "Start or stop running services"
-        _hub_item "3" "🦘 Dropbear Menu"      "Configure Dropbear SSH"
-        _hub_item "4" "♻️  Recover Xray"       "Recover expired Xray accounts"
-        _hub_footer
-        read -r -p "$(echo -e ${C_PROMPT}"👉 Select an option: "${C_RESET})" choice || return
-        case $choice in
-            1) protocol_menu ;;
-            2) on_off_service_menu ;;
-            3) dropbear_config_menu; press_enter ;;
-            4) recover_expired_xray; press_enter ;;
-            0) return ;;
-            *) invalid_option ;;
-        esac
-    done
-}
-
-monitoring_hub() {
-    while true; do
-        show_banner
-        _hub_header "📊 MONITORING & TRAFFIC"
-        _hub_item "1" "📈 Traffic Monitor"    "Live bandwidth & session usage"
-        _hub_item "2" "📊 Client Details"     "Per-client connection info"
-        _hub_item "3" "ℹ️  Service Info"       "Ports & status of all services"
-        _hub_footer
-        read -r -p "$(echo -e ${C_PROMPT}"👉 Select an option: "${C_RESET})" choice || return
-        case $choice in
-            1) traffic_monitor_menu ;;
-            2) client_details_menu; press_enter ;;
-            3) service_info_menu ;;
-            0) return ;;
-            *) invalid_option ;;
-        esac
-    done
-}
-
-access_hub() {
-    while true; do
-        show_banner
-        _hub_header "🎨 ACCESS & CONTENT"
-        _hub_item "1" "🎨 SSH Banner"         "Set the login banner"
-        _hub_item "2" "🔞 Content Filter"     "Block/allow content categories"
-        _hub_item "3" "🚫 Bypass Proxy"       "Manage proxy bypass rules"
-        _hub_item "4" "👑 Grant Root"         "Grant root to a user"
-        _hub_footer
-        read -r -p "$(echo -e ${C_PROMPT}"👉 Select an option: "${C_RESET})" choice || return
-        case $choice in
-            1) ssh_banner_menu ;;
-            2) content_filter_menu ;;
-            3) bypass_proxy_menu; press_enter ;;
-            4) grant_root_menu; press_enter ;;
-            0) return ;;
-            *) invalid_option ;;
-        esac
-    done
-}
-
-network_hub() {
-    while true; do
-        show_banner
-        _hub_header "🌐 NETWORK & PORTS"
-        _hub_item "1" "🔥 NAT Forwarding"     "Manage port forwarding rules"
-        _hub_item "2" "🔌 Port Manager"       "Open/close/free ports"
-        _hub_item "3" "🌐 Set Domain"         "Set the custom domain"
-        _hub_item "4" "🔄 ZiVPN Resync"       "Resync ZiVPN passwords"
-        _hub_footer
-        read -r -p "$(echo -e ${C_PROMPT}"👉 Select an option: "${C_RESET})" choice || return
-        case $choice in
-            1) nat_forward_menu ;;
-            2) port_manager_menu; press_enter ;;
-            3) set_domain ;;
-            4) zivpn_resync_passwords; press_enter ;;
-            0) return ;;
-            *) invalid_option ;;
-        esac
-    done
-}
-
-system_hub() {
-    while true; do
-        show_banner
-        _hub_header "⚙️ SYSTEM & SERVER"
-        _hub_item "1" "🔄 Auto-Reboot Task"   "Schedule automatic reboots"
-        _hub_item "2" "🕐 Timezone"           "Set the server timezone"
-        _hub_item "3" "💣 Rebuild VPS"        "Wipe & reinstall the server"
-        _hub_footer
-        read -r -p "$(echo -e ${C_PROMPT}"👉 Select an option: "${C_RESET})" choice || return
-        case $choice in
-            1) auto_reboot_menu ;;
-            2) timezone_menu; press_enter ;;
-            3) rebuild_vps_menu; press_enter ;;
-            0) return ;;
-            *) invalid_option ;;
-        esac
-    done
-}
-
-integrations_hub() {
-    while true; do
-        show_banner
-        _hub_header "🤖 INTEGRATIONS"
-        _hub_item "1" "🤖 Telegram Bot"       "Manage the Telegram bot"
-        _hub_item "2" "🔗 Rest API (9000)"    "Manage the REST API service"
-        _hub_item "3" "🦆 DuckDNS"            "Free dynamic DNS for your server"
-        _hub_footer
-        read -r -p "$(echo -e ${C_PROMPT}"👉 Select an option: "${C_RESET})" choice || return
-        case $choice in
-            1) telegram_bot_menu; press_enter ;;
-            2) rest_api_menu; press_enter ;;
-            3) duckdns_menu ;;
-            0) return ;;
-            *) invalid_option ;;
-        esac
-    done
-}
-
 main_menu() {
     while true; do
         export UNINSTALL_MODE="interactive"
         show_banner
-
+        
         echo
         echo -e "   ${C_TITLE}─────────────────────────────────────────────────────${C_RESET}"
         echo -e "   ${C_TITLE}              👤 USER MANAGEMENT              ${C_RESET}"
         echo -e "   ${C_TITLE}─────────────────────────────────────────────────────${C_RESET}"
-        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-28s\033[40G${C_CHOICE}[%2s]${C_RESET}\033[45G%-28s\033[K\n" "1" "🌟 Create User" "6" "📝 Edit User"
-        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-28s\033[40G${C_CHOICE}[%2s]${C_RESET}\033[45G%-28s\033[K\n" "2" "🗑️ Delete User" "7" "📋 List Users"
-        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-28s\033[40G${C_CHOICE}[%2s]${C_RESET}\033[45G%-28s\033[K\n" "3" "🔄 Renew User" "8" "👁️ User Details"
-        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-28s\033[40G${C_CHOICE}[%2s]${C_RESET}\033[45G%-28s\033[K\n" "4" "🔒 Lock User" "9" "📱 User Config"
-        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-28s\033[40G${C_ORANGE}[%2s]${C_RESET}\033[45G%-28s\033[K\n" "5" "🔓 Unlock User" "10" "➕ More Users ▸"
-
+        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-28s\033[40G${C_CHOICE}[%2s]${C_RESET}\033[45G%-28s\033[K\n" "1" "🌟 Create New User" "7" "📋 List Users"
+        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-28s\033[40G${C_CHOICE}[%2s]${C_RESET}\033[45G%-28s\033[K\n" "2" "🗑️ Delete User" "8" "📱 User Config"
+        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-28s\033[40G${C_CHOICE}[%2s]${C_RESET}\033[45G%-28s\033[K\n" "3" "🔄 Renew User" "9" "⏱️ Trial Account"
+        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-28s\033[40G${C_CHOICE}[%2s]${C_RESET}\033[45G%-28s\033[K\n" "4" "🔒 Lock User" "10" "👥 Bulk Users"
+        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-28s\033[40G${C_CHOICE}[%2s]${C_RESET}\033[45G%-28s\033[K\n" "5" "🔓 Unlock User" "11" "👁️ User Details"
+        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-28s\033[40G${C_ORANGE}[%2s]${C_RESET}\033[45G%-28s\033[K\n" "6" "📝 Edit User" "18" "💾 Backup Users"
+        
         echo
         echo -e "   ${C_TITLE}─────────────────────────────────────────────────────${C_RESET}"
-        echo -e "   ${C_TITLE}              🧭 MANAGEMENT HUBS              ${C_RESET}"
+        echo -e "   ${C_TITLE}           🛠️ TOOLS & SETTINGS            ${C_RESET}"
         echo -e "   ${C_TITLE}─────────────────────────────────────────────────────${C_RESET}"
-        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-28s\033[40G${C_CHOICE}[%2s]${C_RESET}\033[45G%-28s\033[K\n" "11" "🔌 Protocols & Services ▸" "14" "🌐 Network & Ports ▸"
-        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-28s\033[40G${C_CHOICE}[%2s]${C_RESET}\033[45G%-28s\033[K\n" "12" "📊 Monitoring & Traffic ▸" "15" "⚙️ System & Server ▸"
-        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-28s\033[40G${C_CHOICE}[%2s]${C_RESET}\033[45G%-28s\033[K\n" "13" "🎨 Access & Content ▸" "16" "🤖 Integrations ▸"
+        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-28s\033[40G${C_CHOICE}[%2s]${C_RESET}\033[45G%-28s\033[K\n" "12" "🔌 Protocol Manager" "13" "📈 Traffic Monitor"
+        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-28s\033[40G${C_CHOICE}[%2s]${C_RESET}\033[45G%-28s\033[K\n" "14" "🔞 Content Filter" "15" "🎨 SSH Banner"
+        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-28s\033[40G${C_CHOICE}[%2s]${C_RESET}\033[45G%-28s\033[K\n" "16" "🔄 Auto-Reboot Task" "17" "🌐 Set Domain"
+        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-28s\033[40G${C_CHOICE}[%2s]${C_RESET}\033[45G%-28s\033[K\n" "19" "📥 Restore Users" "20" "🧹 Cleanup Expired"
+        printf "\033[6G${C_CHOICE}[%2s]${C_RESET}\033[11G%-28s\033[40G${C_CHOICE}[%2s]${C_RESET}\033[45G%-28s\033[K\n" "21" "🔥 NAT Forwarding" "22" "🔄 ZiVPN Resync"
 
         echo
         echo -e "   ${C_DANGER}─────────────────────────────────────────────────────${C_RESET}"
@@ -7729,1518 +7030,29 @@ main_menu() {
             5) unlock_user; press_enter ;;
             6) edit_user; press_enter ;;
             7) list_users; press_enter ;;
-            8) view_user_details ;;
-            9) client_config_menu; press_enter ;;
-            10) more_users_hub ;;
-
-            11) protocols_hub ;;
-            12) monitoring_hub ;;
-            13) access_hub ;;
-            14) network_hub ;;
-            15) system_hub ;;
-            16) integrations_hub ;;
-
+            8) client_config_menu; press_enter ;;
+            9) create_trial_account; press_enter ;;
+            10) bulk_create_users; press_enter ;;
+            11) view_user_details ;;
+            
+            12) protocol_menu ;;
+            13) traffic_monitor_menu ;;
+            14) content_filter_menu ;;
+            
+            15) ssh_banner_menu ;;
+            16) auto_reboot_menu ;;
+            17) set_domain ;;
+            18) backup_user_data; press_enter ;;
+            19) restore_user_data; press_enter ;;
+            20) cleanup_expired; press_enter ;;
+            21) nat_forward_menu ;;
+            22) zivpn_resync_passwords; press_enter ;;
+            
             99) uninstall_script ;;
             0) exit 0 ;;
             *) invalid_option ;;
         esac
     done
-}
-
-# ═══════════════════════════════════════════════════════════
-# NEW PROTOCOL INSTALLERS
-# ═══════════════════════════════════════════════════════════
-
-# ── Dropbear ──────────────────────────────────────────────
-install_dropbear() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🦘 Install Dropbear (Lightweight SSH) ---${C_RESET}"
-    if command -v dropbear &>/dev/null; then
-        echo -e "\n${C_YELLOW}ℹ️ Dropbear is already installed.${C_RESET}"
-        return
-    fi
-    echo -e "\n${C_BLUE}📦 Installing Dropbear...${C_RESET}"
-    ff_pkg_install dropbear >/dev/null 2>&1 || { echo -e "${C_RED}❌ Failed to install Dropbear.${C_RESET}"; return; }
-    sed -i 's/^NO_START=1/NO_START=0/' /etc/default/dropbear 2>/dev/null
-    sed -i "s/^DROPBEAR_PORT=22/DROPBEAR_PORT=109/" /etc/default/dropbear 2>/dev/null
-    echo -e "\n${C_BLUE}🔧 Configuring Dropbear on ports ${DROPBEAR_PORTS}...${C_RESET}"
-    systemctl enable dropbear 2>/dev/null
-    systemctl restart dropbear 2>/dev/null
-    echo -e "${C_GREEN}✅ Dropbear installed on ports ${DROPBEAR_PORTS}.${C_RESET}"
-}
-uninstall_dropbear() {
-    echo -e "\n${C_BLUE}🗑️ Removing Dropbear...${C_RESET}"
-    systemctl stop dropbear 2>/dev/null; systemctl disable dropbear 2>/dev/null
-    ff_pkg_purge dropbear >/dev/null 2>&1
-    echo -e "${C_GREEN}✅ Dropbear removed.${C_RESET}"
-}
-
-# ── OpenVPN ───────────────────────────────────────────────
-install_openvpn() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🛡️ Install OpenVPN ---${C_RESET}"
-    if systemctl is-active --quiet openvpn 2>/dev/null; then
-        echo -e "\n${C_YELLOW}ℹ️ OpenVPN is already installed.${C_RESET}"
-        return
-    fi
-    echo -e "\n${C_BLUE}📦 Installing OpenVPN packages...${C_RESET}"
-    ff_pkg_install openvpn easy-rsa >/dev/null 2>&1 || { echo -e "${C_RED}❌ Failed to install packages.${C_RESET}"; return; }
-    check_and_open_firewall_port "$OPENVPN_TCP_PORT" tcp
-    check_and_open_firewall_port "$OPENVPN_UDP_PORT" udp
-    check_and_open_firewall_port "$OPENVPN_SDNS_PORT" udp
-    mkdir -p "$EXPORTS_DIR" 2>/dev/null
-
-    echo -e "\n${C_BLUE}🔐 Generating PKI (CA, server cert, DH params)...${C_RESET}"
-    local EASYRSA_SRC
-    for d in /usr/share/easy-rsa /usr/share/doc/easy-rsa; do
-        [[ -d "$d" ]] && { EASYRSA_SRC="$d"; break; }
-    done
-    if [[ -z "$EASYRSA_SRC" ]]; then
-        echo -e "${C_RED}❌ easy-rsa templates not found.${C_RESET}"
-        return
-    fi
-    rm -rf /etc/openvpn/easy-rsa 2>/dev/null
-    mkdir -p /etc/openvpn/easy-rsa
-    if [[ -f "$EASYRSA_SRC/easyrsa" ]]; then
-        cp -r "$EASYRSA_SRC"/* /etc/openvpn/easy-rsa/
-    elif [[ -d "$EASYRSA_SRC" ]]; then
-        rsync -a "$EASYRSA_SRC"/ /etc/openvpn/easy-rsa/ 2>/dev/null || cp -rn "$EASYRSA_SRC"/* /etc/openvpn/easy-rsa/ 2>/dev/null
-    fi
-    cd /etc/openvpn/easy-rsa || { echo -e "${C_RED}❌ Failed to change dir.${C_RESET}"; return; }
-    ./easyrsa init-pki 2>/dev/null
-    EASYRSA_BATCH=1 ./easyrsa build-ca nopass 2>/dev/null
-    EASYRSA_BATCH=1 ./easyrsa build-server-full server nopass 2>/dev/null
-    ./easyrsa gen-dh 2>/dev/null
-    openvpn --genkey --secret /etc/openvpn/ta.key 2>/dev/null
-
-    # Server TCP config
-    cat > /etc/openvpn/server-tcp.conf <<OVPNA
-port ${OPENVPN_TCP_PORT}
-proto tcp
-dev tun
-ca /etc/openvpn/easy-rsa/pki/ca.crt
-cert /etc/openvpn/easy-rsa/pki/issued/server.crt
-key /etc/openvpn/easy-rsa/pki/private/server.key
-dh /etc/openvpn/easy-rsa/pki/dh.pem
-tls-auth /etc/openvpn/ta.key 0
-auth SHA256
-cipher AES-256-GCM
-data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305
-topology subnet
-server 10.8.0.0 255.255.255.0
-ifconfig-pool-persist ipp.txt
-push "redirect-gateway def1"
-push "dhcp-option DNS 8.8.8.8"
-push "dhcp-option DNS 1.1.1.1"
-keepalive 10 120
-user nobody
-group nogroup
-persist-key
-persist-tun
-status /var/log/openvpn-status.log
-log-append /var/log/openvpn-tcp.log
-verb 3
-explicit-exit-notify 0
-plugin /usr/lib/openvpn/openvpn-auth-pam.so login
-username-as-common-name
-duplicate-cn
-OVPNA
-
-    # Server UDP config
-    cat > /etc/openvpn/server-udp.conf <<OVPNB
-port ${OPENVPN_UDP_PORT}
-proto udp
-dev tun
-ca /etc/openvpn/easy-rsa/pki/ca.crt
-cert /etc/openvpn/easy-rsa/pki/issued/server.crt
-key /etc/openvpn/easy-rsa/pki/private/server.key
-dh /etc/openvpn/easy-rsa/pki/dh.pem
-tls-auth /etc/openvpn/ta.key 0
-auth SHA256
-cipher AES-256-GCM
-data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305
-topology subnet
-server 10.9.0.0 255.255.255.0
-ifconfig-pool-persist ipp-udp.txt
-push "redirect-gateway def1"
-push "dhcp-option DNS 8.8.8.8"
-push "dhcp-option DNS 1.1.1.1"
-keepalive 10 120
-user nobody
-group nogroup
-persist-key
-persist-tun
-status /var/log/openvpn-status-udp.log
-log-append /var/log/openvpn-udp.log
-verb 3
-explicit-exit-notify 1
-plugin /usr/lib/openvpn/openvpn-auth-pam.so login
-username-as-common-name
-duplicate-cn
-OVPNB
-
-    # Server SlowDNS config (no redirect-gateway; DNSTT handles routing)
-    cat > /etc/openvpn/server-sdns.conf <<OVPNC
-port ${OPENVPN_SDNS_PORT}
-proto udp
-dev tun
-ca /etc/openvpn/easy-rsa/pki/ca.crt
-cert /etc/openvpn/easy-rsa/pki/issued/server.crt
-key /etc/openvpn/easy-rsa/pki/private/server.key
-dh /etc/openvpn/easy-rsa/pki/dh.pem
-tls-auth /etc/openvpn/ta.key 0
-auth SHA256
-cipher AES-256-GCM
-data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305
-topology subnet
-server 10.10.0.0 255.255.255.0
-ifconfig-pool-persist ipp-sdns.txt
-keepalive 10 120
-user nobody
-group nogroup
-persist-key
-persist-tun
-status /var/log/openvpn-status-sdns.log
-log-append /var/log/openvpn-sdns.log
-verb 3
-explicit-exit-notify 1
-plugin /usr/lib/openvpn/openvpn-auth-pam.so login
-username-as-common-name
-duplicate-cn
-OVPNC
-
-    # Enable and start TCP + UDP instances
-    systemctl enable openvpn@server-tcp 2>/dev/null
-    systemctl enable openvpn@server-udp 2>/dev/null
-    systemctl start openvpn@server-tcp 2>/dev/null
-    systemctl start openvpn@server-udp 2>/dev/null
-    # SlowDNS server is started only when DNSTT is active
-
-    echo -e "\n${C_GREEN}✅ OpenVPN installed with auto-generated PKI.${C_RESET}"
-    echo -e "${C_CYAN}   TCP mode:     ${OPENVPN_TCP_PORT} (active)${C_RESET}"
-    echo -e "${C_CYAN}   UDP mode:     ${OPENVPN_UDP_PORT} (active)${C_RESET}"
-    echo -e "${C_CYAN}   SlowDNS mode: ${OPENVPN_SDNS_PORT} (start with DNSTT)${C_RESET}"
-    echo -e "${C_DIM}   Client configs will be auto-generated on account creation.${C_RESET}"
-}
-uninstall_openvpn() {
-    echo -e "\n${C_BLUE}🗑️ Removing OpenVPN...${C_RESET}"
-    systemctl stop openvpn@server-tcp 2>/dev/null; systemctl disable openvpn@server-tcp 2>/dev/null
-    systemctl stop openvpn@server-udp 2>/dev/null; systemctl disable openvpn@server-udp 2>/dev/null
-    systemctl stop openvpn@server-sdns 2>/dev/null; systemctl disable openvpn@server-sdns 2>/dev/null
-    ff_pkg_purge openvpn >/dev/null 2>&1
-    rm -rf /etc/openvpn/easy-rsa /etc/openvpn/server-tcp.conf /etc/openvpn/server-udp.conf /etc/openvpn/server-sdns.conf /etc/openvpn/ta.key 2>/dev/null
-    echo -e "${C_GREEN}✅ OpenVPN removed.${C_RESET}"
-}
-
-# ── WireGuard ─────────────────────────────────────────────
-install_wireguard() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🔗 Install WireGuard ---${C_RESET}"
-    if systemctl is-active --quiet wg-quick@wg0 2>/dev/null; then
-        echo -e "\n${C_YELLOW}ℹ️ WireGuard is already installed.${C_RESET}"
-        return
-    fi
-    echo -e "\n${C_BLUE}📦 Installing WireGuard...${C_RESET}"
-    ff_pkg_install wireguard wireguard-tools >/dev/null 2>&1 || { echo -e "${C_RED}❌ Failed to install WireGuard.${C_RESET}"; return; }
-    check_and_open_firewall_port "$WIREGUARD_PORT" udp
-    mkdir -p "$EXPORTS_DIR" 2>/dev/null
-
-    echo -e "\n${C_BLUE}🔐 Generating server keys...${C_RESET}"
-    mkdir -p /etc/wireguard 2>/dev/null
-    wg genkey | tee /etc/wireguard/server.key | wg pubkey > /etc/wireguard/server.pub 2>/dev/null
-    chmod 600 /etc/wireguard/server.key
-
-    local WG_SERVER_PRIV; WG_SERVER_PRIV=$(</etc/wireguard/server.key)
-
-    cat > /etc/wireguard/wg0.conf <<WGE
-[Interface]
-PrivateKey = ${WG_SERVER_PRIV}
-Address = 10.66.66.1/24
-ListenPort = ${WIREGUARD_PORT}
-SaveConfig = false
-PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o $(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1) -j MASQUERADE
-PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o $(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1) -j MASQUERADE
-WGE
-
-    systemctl enable wg-quick@wg0 2>/dev/null
-    systemctl start wg-quick@wg0 2>/dev/null
-
-    echo -e "\n${C_GREEN}✅ WireGuard installed with auto-generated keys.${C_RESET}"
-    echo -e "${C_CYAN}   Listen port: ${WIREGUARD_PORT} (udp)${C_RESET}"
-    echo -e "${C_CYAN}   Server pubkey: $(</etc/wireguard/server.pub)${C_RESET}"
-    echo -e "${C_DIM}   Client configs will be auto-generated on account creation.${C_RESET}"
-}
-uninstall_wireguard() {
-    echo -e "\n${C_BLUE}🗑️ Removing WireGuard...${C_RESET}"
-    wg-quick down wg0 2>/dev/null
-    systemctl disable wg-quick@wg0 2>/dev/null
-    ff_pkg_purge wireguard wireguard-tools >/dev/null 2>&1
-    rm -f /etc/wireguard/server.key /etc/wireguard/server.pub /etc/wireguard/wg0.conf 2>/dev/null
-    echo -e "${C_GREEN}✅ WireGuard removed.${C_RESET}"
-}
-
-# ── Hysteria ──────────────────────────────────────────────
-install_hysteria() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🌪️ Install Hysteria 2 ---${C_RESET}"
-    if systemctl is-active --quiet hysteria-server 2>/dev/null; then
-        echo -e "\n${C_YELLOW}ℹ️ Hysteria is already installed.${C_RESET}"
-        return
-    fi
-    echo -e "\n${C_BLUE}📦 Installing Hysteria 2 binary...${C_RESET}"
-    local arch; arch=$(uname -m)
-    local url
-    case "$arch" in
-        x86_64)  url="https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-amd64" ;;
-        aarch64) url="https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-arm64" ;;
-        *) echo -e "${C_RED}❌ Unsupported arch.${C_RESET}"; return ;;
-    esac
-    ff_fetch_binary /usr/local/bin/hysteria "$url" || { echo -e "${C_RED}❌ Download failed.${C_RESET}"; return; }
-    chmod +x /usr/local/bin/hysteria
-    check_and_open_firewall_port "$HYSTERIA1_PORT" udp
-    check_and_open_firewall_port "$HYSTERIA2_PORT" udp
-    mkdir -p /etc/hysteria "$EXPORTS_DIR" 2>/dev/null
-
-    echo -e "\n${C_BLUE}🔐 Generating self-signed cert and config...${C_RESET}"
-    openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-        -days 3650 -keyout /etc/hysteria/key.pem -out /etc/hysteria/cert.pem \
-        -subj "/CN=skylartech-hysteria" 2>/dev/null
-
-    cat > /etc/hysteria/config.json <<HYE
-{
-  "listen": ":${HYSTERIA2_PORT}",
-  "tls": {
-    "cert": "/etc/hysteria/cert.pem",
-    "key": "/etc/hysteria/key.pem"
-  },
-  "auth": {
-    "type": "userpass",
-    "config": []
-  },
-  "quic": {
-    "initStreamReceiveWindow": 8388608,
-    "maxIdleTimeout": "30s",
-    "keepAliveInterval": "10s"
-  }
-}
-HYE
-
-    cat > /etc/systemd/system/hysteria-server.service <<HYSRV
-[Unit]
-Description=Hysteria 2 VPN Server
-After=network.target
-[Service]
-Type=simple
-User=root
-ExecStart=/usr/local/bin/hysteria server -c /etc/hysteria/config.json
-Restart=always
-RestartSec=5
-[Install]
-WantedBy=multi-user.target
-HYSRV
-
-    systemctl daemon-reload
-    systemctl enable hysteria-server 2>/dev/null
-    systemctl start hysteria-server 2>/dev/null
-
-    echo -e "\n${C_GREEN}✅ Hysteria 2 installed with auto-generated config.${C_RESET}"
-    echo -e "${C_CYAN}   Listen port: ${HYSTERIA2_PORT} (udp/quic)${C_RESET}"
-    echo -e "${C_DIM}   Client configs will be auto-generated on account creation.${C_RESET}"
-}
-uninstall_hysteria() {
-    echo -e "\n${C_BLUE}🗑️ Removing Hysteria...${C_RESET}"
-    systemctl stop hysteria-server 2>/dev/null; systemctl disable hysteria-server 2>/dev/null
-    rm -f /usr/local/bin/hysteria /etc/systemd/system/hysteria-server.service
-    rm -rf /etc/hysteria 2>/dev/null
-    systemctl daemon-reload
-    echo -e "${C_GREEN}✅ Hysteria removed.${C_RESET}"
-}
-
-# ── ShadowSocks ───────────────────────────────────────────
-install_shadowsocks() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 📡 Install ShadowSocks (Standalone) ---${C_RESET}"
-    if systemctl is-active --quiet shadowsocks-libev-server 2>/dev/null; then
-        echo -e "\n${C_YELLOW}ℹ️ ShadowSocks is already installed.${C_RESET}"
-        return
-    fi
-    echo -e "\n${C_BLUE}📦 Installing ShadowSocks-libev...${C_RESET}"
-    ff_pkg_install shadowsocks-libev >/dev/null 2>&1 || { echo -e "${C_RED}❌ Failed.${C_RESET}"; return; }
-    cat > /etc/shadowsocks-libev/config.json <<EOF
-{
-    "server":["0.0.0.0"],
-    "server_port":${SHADOWSOCKS_PORT},
-    "password":"skylartech-ss",
-    "timeout":60,
-    "method":"chacha20-ietf-poly1305",
-    "fast_open":true
-}
-EOF
-    check_and_open_firewall_port "$SHADOWSOCKS_PORT" tcp
-    systemctl enable shadowsocks-libev 2>/dev/null
-    systemctl restart shadowsocks-libev 2>/dev/null
-    echo -e "${C_GREEN}✅ ShadowSocks installed on port ${SHADOWSOCKS_PORT}.${C_RESET}"
-}
-uninstall_shadowsocks() {
-    echo -e "\n${C_BLUE}🗑️ Removing ShadowSocks...${C_RESET}"
-    systemctl stop shadowsocks-libev 2>/dev/null; systemctl disable shadowsocks-libev 2>/dev/null
-    ff_pkg_purge shadowsocks-libev >/dev/null 2>&1
-    echo -e "${C_GREEN}✅ ShadowSocks removed.${C_RESET}"
-}
-
-# ── Socks5 Proxy ──────────────────────────────────────────
-install_socks5() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🧦 Install Socks5 Proxy ---${C_RESET}"
-    if systemctl is-active --quiet socks5 2>/dev/null; then
-        echo -e "\n${C_YELLOW}ℹ️ Socks5 proxy is already installed.${C_RESET}"
-        return
-    fi
-    echo -e "\n${C_BLUE}📦 Installing Dante Socks5...${C_RESET}"
-    ff_pkg_install dante-server >/dev/null 2>&1 || { echo -e "${C_RED}❌ Failed.${C_RESET}"; return; }
-    cat > /etc/danted.conf <<EOF
-logoutput: /var/log/danted.log
-internal: 0.0.0.0 port = ${SOCKS5_PORT}
-external: $(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1)
-method: username
-user.privileged: root
-user.unprivileged: nobody
-client pass {
-    from: 0.0.0.0/0 to: 0.0.0.0/0
-    log: error connect
-}
-socks pass {
-    from: 0.0.0.0/0 to: 0.0.0.0/0
-    log: error connect disconnect
-}
-EOF
-    check_and_open_firewall_port "$SOCKS5_PORT" tcp
-    systemctl enable danted 2>/dev/null
-    systemctl restart danted 2>/dev/null
-    echo -e "${C_GREEN}✅ Socks5 proxy installed on port ${SOCKS5_PORT}.${C_RESET}"
-}
-uninstall_socks5() {
-    echo -e "\n${C_BLUE}🗑️ Removing Socks5 proxy...${C_RESET}"
-    systemctl stop danted 2>/dev/null; systemctl disable danted 2>/dev/null
-    ff_pkg_purge dante-server >/dev/null 2>&1
-    echo -e "${C_GREEN}✅ Socks5 proxy removed.${C_RESET}"
-}
-
-# ── SlowUDP (follows udp-custom pattern for HWID) ─────────
-install_slowudp() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🐢 Install SlowUDP ---${C_RESET}"
-    if systemctl is-active --quiet slowudp 2>/dev/null; then
-        echo -e "\n${C_YELLOW}ℹ️ SlowUDP is already installed.${C_RESET}"
-        return
-    fi
-    echo -e "\n${C_BLUE}📦 Installing SlowUDP...${C_RESET}"
-    local arch; arch=$(uname -m)
-    local url
-    case "$arch" in
-        x86_64)  url="https://github.com/slowudp/slowudp/releases/latest/download/slowudp-linux-amd64" ;;
-        aarch64) url="https://github.com/slowudp/slowudp/releases/latest/download/slowudp-linux-arm64" ;;
-        *) echo -e "${C_RED}❌ Unsupported arch.${C_RESET}"; return ;;
-    esac
-    ff_fetch_binary /usr/local/bin/slowudp "$url" 2>/dev/null || {
-        echo -e "${C_YELLOW}⚠️ Binary download failed. Install manually.${C_RESET}"
-        return
-    }
-    chmod +x /usr/local/bin/slowudp
-    check_and_open_firewall_port "$SLOWUDP_PORT" udp
-    cat > /etc/systemd/system/slowudp.service <<EOF
-[Unit]
-Description=SlowUDP Tunnel
-After=network.target
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/slowudp -port ${SLOWUDP_PORT}
-Restart=always
-RestartSec=3
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload
-    systemctl enable slowudp 2>/dev/null
-    systemctl restart slowudp 2>/dev/null
-    echo -e "${C_GREEN}✅ SlowUDP installed on port ${SLOWUDP_PORT}.${C_RESET}"
-}
-uninstall_slowudp() {
-    echo -e "\n${C_BLUE}🗑️ Removing SlowUDP...${C_RESET}"
-    systemctl stop slowudp 2>/dev/null; systemctl disable slowudp 2>/dev/null
-    rm -f /etc/systemd/system/slowudp.service /usr/local/bin/slowudp
-    systemctl daemon-reload
-    echo -e "${C_GREEN}✅ SlowUDP removed.${C_RESET}"
-}
-
-# ── OHP ───────────────────────────────────────────────────
-install_ohp() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🌉 Install Open HTTP Puncher ---${C_RESET}"
-    if systemctl is-active --quiet ohp 2>/dev/null; then
-        echo -e "\n${C_YELLOW}ℹ️ OHP is already installed.${C_RESET}"
-        return
-    fi
-    echo -e "\n${C_BLUE}📦 Installing OHP...${C_RESET}"
-    local url="https://github.com/ophttp/ohp/releases/latest/download/ohp-linux-amd64"
-    ff_fetch_binary /usr/local/bin/ohp "$url" 2>/dev/null || {
-        echo -e "${C_YELLOW}⚠️ Binary download failed. Install manually.${C_RESET}"
-        return
-    }
-    chmod +x /usr/local/bin/ohp
-    for p in $OHP_PORT_1 $OHP_PORT_2 $OHP_PORT_3; do check_and_open_firewall_port "$p" tcp; done
-    cat > /etc/systemd/system/ohp.service <<EOF
-[Unit]
-Description=Open HTTP Puncher
-After=network.target
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/ohp -port ${OHP_PORT_1},${OHP_PORT_2},${OHP_PORT_3}
-Restart=always
-RestartSec=3
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload
-    systemctl enable ohp 2>/dev/null; systemctl restart ohp 2>/dev/null
-    echo -e "${C_GREEN}✅ OHP installed on ports ${OHP_PORT_1}/${OHP_PORT_2}/${OHP_PORT_3}.${C_RESET}"
-}
-uninstall_ohp() {
-    echo -e "\n${C_BLUE}🗑️ Removing OHP...${C_RESET}"
-    systemctl stop ohp 2>/dev/null; systemctl disable ohp 2>/dev/null
-    rm -f /etc/systemd/system/ohp.service /usr/local/bin/ohp
-    systemctl daemon-reload
-    echo -e "${C_GREEN}✅ OHP removed.${C_RESET}"
-}
-
-# ── Squid Proxy ───────────────────────────────────────────
-install_squid() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🐙 Install Squid Proxy ---${C_RESET}"
-    if systemctl is-active --quiet squid 2>/dev/null; then
-        echo -e "\n${C_YELLOW}ℹ️ Squid is already installed.${C_RESET}"
-        return
-    fi
-    ff_pkg_install squid >/dev/null 2>&1 || { echo -e "${C_RED}❌ Failed.${C_RESET}"; return; }
-    check_and_open_firewall_port "$SQUID_PORT" tcp
-    echo -e "${C_GREEN}✅ Squid installed. Edit /etc/squid/squid.conf to configure port ${SQUID_PORT}.${C_RESET}"
-}
-uninstall_squid() {
-    echo -e "\n${C_BLUE}🗑️ Removing Squid...${C_RESET}"
-    systemctl stop squid 2>/dev/null; systemctl disable squid 2>/dev/null
-    ff_pkg_purge squid >/dev/null 2>&1
-    echo -e "${C_GREEN}✅ Squid removed.${C_RESET}"
-}
-
-# ── Stunnel ───────────────────────────────────────────────
-install_stunnel() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🔒 Install Stunnel (SSL Wrapper) ---${C_RESET}"
-    if systemctl is-active --quiet stunnel4 2>/dev/null; then
-        echo -e "\n${C_YELLOW}ℹ️ Stunnel is already installed.${C_RESET}"
-        return
-    fi
-    ff_pkg_install stunnel4 >/dev/null 2>&1 || { echo -e "${C_RED}❌ Failed.${C_RESET}"; return; }
-    check_and_open_firewall_port "$STUNNEL_PORT" tcp
-    mkdir -p /etc/stunnel
-    echo -e "${C_GREEN}✅ Stunnel installed on port ${STUNNEL_PORT}. Edit /etc/stunnel/*.conf to configure.${C_RESET}"
-}
-uninstall_stunnel() {
-    echo -e "\n${C_BLUE}🗑️ Removing Stunnel...${C_RESET}"
-    systemctl stop stunnel4 2>/dev/null; systemctl disable stunnel4 2>/dev/null
-    ff_pkg_purge stunnel4 >/dev/null 2>&1
-    echo -e "${C_GREEN}✅ Stunnel removed.${C_RESET}"
-}
-
-# ── UDP Request (follows udp-custom style for HWID) ───────
-install_udp_request() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 📦 Install UDP Request ---${C_RESET}"
-    if systemctl is-active --quiet udp-request 2>/dev/null; then
-        echo -e "\n${C_YELLOW}ℹ️ UDP Request is already installed.${C_RESET}"
-        return
-    fi
-    echo -e "\n${C_BLUE}📦 Installing UDP Request...${C_RESET}"
-    local url="https://github.com/udprequest/udp-request/releases/latest/download/udp-request-linux-amd64"
-    ff_fetch_binary /usr/local/bin/udp-request "$url" 2>/dev/null || {
-        echo -e "${C_YELLOW}⚠️ Binary download failed. Install manually.${C_RESET}"
-        return
-    }
-    chmod +x /usr/local/bin/udp-request
-    check_and_open_firewall_port "$UDP_REQUEST_PORT" udp
-    cat > /etc/systemd/system/udp-request.service <<EOF
-[Unit]
-Description=UDP Request Tunnel
-After=network.target
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/udp-request -port ${UDP_REQUEST_PORT}
-Restart=always
-RestartSec=3
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload
-    systemctl enable udp-request 2>/dev/null; systemctl restart udp-request 2>/dev/null
-    echo -e "${C_GREEN}✅ UDP Request installed on port ${UDP_REQUEST_PORT}.${C_RESET}"
-}
-uninstall_udp_request() {
-    echo -e "\n${C_BLUE}🗑️ Removing UDP Request...${C_RESET}"
-    systemctl stop udp-request 2>/dev/null; systemctl disable udp-request 2>/dev/null
-    rm -f /etc/systemd/system/udp-request.service /usr/local/bin/udp-request
-    systemctl daemon-reload
-    echo -e "${C_GREEN}✅ UDP Request removed.${C_RESET}"
-}
-
-# ── Argo Tunnel ──────────────────────────────────────────
-install_argo_tunnel() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- ☁️ Install Argo (Cloudflare) Tunnel ---${C_RESET}"
-    if systemctl is-active --quiet argo-tunnel 2>/dev/null; then
-        echo -e "\n${C_YELLOW}ℹ️ Argo Tunnel is already installed.${C_RESET}"
-        return
-    fi
-    echo -e "\n${C_BLUE}📦 Installing Cloudflared...${C_RESET}"
-    local arch; arch=$(uname -m)
-    local url
-    case "$arch" in
-        x86_64)  url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" ;;
-        aarch64) url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64" ;;
-        *) echo -e "${C_RED}❌ Unsupported arch.${C_RESET}"; return ;;
-    esac
-    ff_fetch_binary /usr/local/bin/cloudflared "$url" || { echo -e "${C_RED}❌ Download failed.${C_RESET}"; return; }
-    chmod +x /usr/local/bin/cloudflared
-    check_and_open_firewall_port "$ARGO_TUNNEL_HTTP" tcp
-    check_and_open_firewall_port "$ARGO_TUNNEL_HTTPS" tcp
-    echo -e "${C_GREEN}✅ Cloudflared installed. Run 'cloudflared tunnel login' to configure.${C_RESET}"
-    echo -e "${C_YELLOW}⚠️ Using ports ${ARGO_TUNNEL_HTTP}/${ARGO_TUNNEL_HTTPS} to avoid conflict with HAProxy (80/443) and Nginx (8880/8443).${C_RESET}"
-}
-uninstall_argo_tunnel() {
-    echo -e "\n${C_BLUE}🗑️ Removing Argo Tunnel...${C_RESET}"
-    systemctl stop argo-tunnel 2>/dev/null; systemctl disable argo-tunnel 2>/dev/null
-    rm -f /usr/local/bin/cloudflared
-    echo -e "${C_GREEN}✅ Argo Tunnel removed.${C_RESET}"
-}
-
-# ═══════════════════════════════════════════════════════════
-# NEW FEATURE MENUS
-# ═══════════════════════════════════════════════════════════
-
-# ── Telegram Bot ──────────────────────────────────────────
-telegram_bot_menu() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🤖 Telegram Bot Notification ---${C_RESET}"
-    local bot_conf="$DB_DIR/telegram.conf"
-    local bot_status="${C_STATUS_I}Not configured${C_RESET}"
-    if [[ -f "$bot_conf" ]]; then
-        source "$bot_conf"
-        bot_status="${C_STATUS_A}Configured${C_RESET}"
-    fi
-    echo -e "\n${C_WHITE}Status: ${bot_status}${C_RESET}"
-    echo -e "\n${C_BOLD}Options:${C_RESET}\n"
-    printf "  ${C_CHOICE}[ 1]${C_RESET} %-40s\n" "🤖 Set Bot Token & Chat ID"
-    printf "  ${C_CHOICE}[ 2]${C_RESET} %-40s\n" "🔧 Toggle Notifications (on/off)"
-    printf "  ${C_CHOICE}[ 3]${C_RESET} %-40s\n" "📋 Test Notification"
-    [[ -f "$bot_conf" ]] && printf "  ${C_DANGER}[ 4]${C_RESET} %-40s\n" "🗑️ Remove Bot Configuration"
-    echo -e "\n  ${C_WARN}[ 0]${C_RESET} ↩️ Return"
-    echo
-    read -p "👉 Select an option: " t_choice
-    case $t_choice in
-        1)
-            read -p "👉 Bot Token: " token
-            read -p "👉 Chat ID: " chat_id
-            echo "TELEGRAM_BOT_TOKEN=\"$token\"" > "$bot_conf"
-            echo "TELEGRAM_CHAT_ID=\"$chat_id\"" >> "$bot_conf"
-            echo "TELEGRAM_ENABLED=\"yes\"" >> "$bot_conf"
-            echo -e "${C_GREEN}✅ Telegram bot configured.${C_RESET}"
-            press_enter ;;
-        2)
-            if [[ ! -f "$bot_conf" ]]; then echo -e "\n${C_RED}❌ Configure bot first.${C_RESET}"; press_enter; return; fi
-            source "$bot_conf"
-            if [[ "$TELEGRAM_ENABLED" == "yes" ]]; then
-                sed -i 's/TELEGRAM_ENABLED="yes"/TELEGRAM_ENABLED="no"/' "$bot_conf"
-                echo -e "${C_YELLOW}⏸️ Notifications disabled.${C_RESET}"
-            else
-                sed -i 's/TELEGRAM_ENABLED="no"/TELEGRAM_ENABLED="yes"/' "$bot_conf"
-                echo -e "${C_GREEN}✅ Notifications enabled.${C_RESET}"
-            fi
-            press_enter ;;
-        3)
-            if [[ ! -f "$bot_conf" ]]; then echo -e "\n${C_RED}❌ Configure bot first.${C_RESET}"; press_enter; return; fi
-            source "$bot_conf"
-            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-                -d "chat_id=${TELEGRAM_CHAT_ID}&text=🔔 Test notification from Skylartech" >/dev/null 2>&1 \
-                && echo -e "${C_GREEN}✅ Test sent.${C_RESET}" || echo -e "${C_RED}❌ Failed.${C_RESET}"
-            press_enter ;;
-        4) rm -f "$bot_conf"; echo -e "${C_GREEN}✅ Bot config removed.${C_RESET}"; press_enter ;;
-        0) return ;;
-        *) invalid_option ;;
-    esac
-}
-
-_send_telegram() {
-    local message="$1"
-    local bot_conf="$DB_DIR/telegram.conf"
-    [[ -f "$bot_conf" ]] || return 0
-    source "$bot_conf"
-    [[ "$TELEGRAM_ENABLED" == "yes" && -n "$TELEGRAM_BOT_TOKEN" && -n "$TELEGRAM_CHAT_ID" ]] || return 0
-    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-        -d "chat_id=${TELEGRAM_CHAT_ID}&text=${message}&parse_mode=HTML" >/dev/null 2>&1 || true
-}
-
-# ── Rest API ──────────────────────────────────────────────
-rest_api_menu() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🔗 Rest API (Port ${REST_API_PORT}) ---${C_RESET}"
-    local api_status="${C_STATUS_I}Not installed${C_RESET}"
-    if [[ -f /etc/systemd/system/rest-api.service ]] && systemctl is-active --quiet rest-api; then
-        api_status="${C_STATUS_A}Running${C_RESET}"
-    elif [[ -f /etc/systemd/system/rest-api.service ]]; then
-        api_status="${C_STATUS_I}Stopped${C_RESET}"
-    fi
-    echo -e "\n${C_WHITE}Status: ${api_status}${C_RESET}"
-    echo -e "\n${C_BOLD}Options:${C_RESET}\n"
-    printf "  ${C_CHOICE}[ 1]${C_RESET} %-40s\n" "🚀 Install/Start Rest API"
-    printf "  ${C_CHOICE}[ 2]${C_RESET} %-40s\n" "⏹️ Stop Rest API"
-    printf "  ${C_CHOICE}[ 3]${C_RESET} %-40s\n" "🔁 Restart Rest API"
-    printf "  ${C_CHOICE}[ 4]${C_RESET} %-40s\n" "📋 View API Info"
-    echo -e "\n  ${C_WARN}[ 0]${C_RESET} ↩️ Return"
-    echo
-    read -p "👉 Select an option: " api_choice
-    case $api_choice in
-        1)
-            if [[ ! -f /etc/systemd/system/rest-api.service ]]; then
-                local api_script="/usr/local/bin/skylartech-api.py"
-                cat > "$api_script" <<'APIPYTHON'
-#!/usr/bin/env python3
-import json, os, subprocess, sys, http.server, socketserver, urllib.parse, time
-DB_FILE = "/etc/skylartech/users.db"
-EXPORTS_DIR = "/etc/skylartech/exports"
-HOST = "0.0.0.0"
-PORT = 9000
-
-class H(http.server.BaseHTTPRequestHandler):
-    def _j(self, d, s=200):
-        self.send_response(s); self.send_header("Content-Type","application/json")
-        self.send_header("Access-Control-Allow-Origin","*"); self.end_headers()
-        self.wfile.write(json.dumps(d).encode())
-    def _e(self, m, s=400): self._j({"error":m}, s)
-    def _b(self):
-        l = int(self.headers.get("Content-Length",0))
-        return json.loads(self.rfile.read(l).decode()) if l else {}
-    def _p(self):
-        p = urllib.parse.urlparse(self.path)
-        return [x for x in p.path.split("/") if x], p.query
-    def _users(self):
-        u = []
-        if os.path.exists(DB_FILE):
-            with open(DB_FILE) as f:
-                for l in f:
-                    l = l.strip()
-                    if not l or l.startswith("#"): continue
-                    p = l.split(":")
-                    if len(p) >= 5:
-                        u.append({"username":p[0],"password":p[1],"expires":p[2],
-                            "limit":int(p[3]) if p[3].isdigit() else 1,
-                            "bandwidth_gb":p[4],"marker":p[5] if len(p)>5 else "",
-                            "hwid":p[6] if len(p)>6 else "","strict":p[7] if len(p)>7 else "0",
-                            "app":p[8] if len(p)>8 else "http"})
-        return u
-    def _run(self, *a):
-        try: return subprocess.check_output(a, stderr=subprocess.STDOUT, timeout=30).decode()
-        except: return ""
-    def do_GET(self):
-        p, q = self._p()
-        if not p or p[0] == "":
-            return self._j({"status":"ok","service":"Skylartech API","version":"1.0"})
-        if p[0] == "users":
-            us = self._users()
-            if len(p) == 1: return self._j(us)
-            for u in us:
-                if u["username"] == p[1]:
-                    cf = []
-                    if u["app"]=="openvpn" and os.path.exists(f"{EXPORTS_DIR}/{p[1]}.ovpn"):
-                        cf.append({"type":"openvpn","path":f"{EXPORTS_DIR}/{p[1]}.ovpn"})
-                    if u["app"]=="wireguard" and os.path.exists(f"{EXPORTS_DIR}/{p[1]}.conf"):
-                        cf.append({"type":"wireguard","path":f"{EXPORTS_DIR}/{p[1]}.conf"})
-                    if u["app"]=="hysteria2" and os.path.exists(f"{EXPORTS_DIR}/{p[1]}-hysteria.json"):
-                        cf.append({"type":"hysteria2","path":f"{EXPORTS_DIR}/{p[1]}-hysteria.json"})
-                    u["configs"] = cf; return self._j(u)
-            return self._j({"error":"User not found"}, 404)
-        if p[0] == "status":
-            up = self._run("uptime","-p").strip()
-            m = self._run("free","-m")
-            lu = sum(1 for u in self._users() if u["expires"] and u["expires"] >= time.strftime("%Y-%m-%d"))
-            return self._j({"uptime":up,"mem":m.strip(),"users_total":len(self._users()),"users_active":lu})
-        return self._e("Not found", 404)
-    def do_POST(self):
-        p, _ = self._p()
-        if p and p[0] == "users":
-            d = self._b()
-            u = d.get("username",""); pw = d.get("password","")
-            dy = str(d.get("days",30)); lm = str(d.get("limit",1)); bw = str(d.get("bandwidth_gb",0))
-            ap = d.get("app","http")
-            if not u: return self._e("username required")
-            if not pw: pw = subprocess.check_output(["tr","-dc","A-Za-z0-9"], stdin=open("/dev/urandom","rb"), timeout=5).decode()[:8]
-            ex = subprocess.check_output(["date","-d",f"+{dy} days","+%Y-%m-%d"], timeout=5).decode().strip()
-            self._run("useradd","-m","-s","/usr/sbin/nologin",u)
-            self._run("usermod","-aG","ffusers",u)
-            self._run("bash","-c",f'echo "{u}:{pw}" | chpasswd')
-            self._run("chage","-E",ex,u)
-            with open(DB_FILE,"a") as f: f.write(f"{u}:{pw}:{ex}:{lm}:{bw}::::0:{ap}\n")
-            al = self._run("bash","-c",f"cd {os.path.dirname(DB_FILE)} && hwid_sync_allowed_db")
-            return self._j({"status":"created","username":u,"password":pw,"expires":ex}, 201)
-        return self._e("Not found", 404)
-    def do_DELETE(self):
-        p, _ = self._p()
-        if p and p[0] == "users" and len(p) == 2:
-            u = p[1]
-            self._run("bash","-c",f"userdel -r {u}")
-            import re
-            with open(DB_FILE) as f: c = f.read()
-            with open(DB_FILE,"w") as f: f.write(re.sub(f"^{u}:.*\n?","",c))
-            self._run("bash","-c","hwid_sync_allowed_db")
-            self._run("rm","-f",f"{EXPORTS_DIR}/{u}.ovpn",f"{EXPORTS_DIR}/{u}.conf",f"{EXPORTS_DIR}/{u}-hysteria.json")
-            return self._j({"status":"deleted","username":u})
-        return self._e("Not found", 404)
-    def do_OPTIONS(self):
-        self.send_response(200); self.send_header("Access-Control-Allow-Origin","*")
-        self.send_header("Access-Control-Allow-Methods","GET,POST,DELETE,OPTIONS")
-        self.send_header("Access-Control-Allow-Headers","Content-Type"); self.end_headers()
-    def log_message(self, f, *a): sys.stderr.write("[API] %s\n" % (a[0] if a else f))
-if __name__ == "__main__":
-    socketserver.TCPServer.allow_reuse_address = True
-    s = socketserver.TCPServer((HOST, PORT), H)
-    sys.stderr.write(f"[API] Listening on {HOST}:{PORT}\n"); s.serve_forever()
-APIPYTHON
-                chmod +x "$api_script"
-                cat > /etc/systemd/system/rest-api.service <<EOF
-[Unit]
-Description=Skylartech Rest API
-After=network.target
-[Service]
-Type=simple
-ExecStart=/usr/bin/env python3 /usr/local/bin/skylartech-api.py
-Restart=always
-RestartSec=3
-[Install]
-WantedBy=multi-user.target
-EOF
-                systemctl daemon-reload
-                check_and_open_firewall_port "$REST_API_PORT" tcp
-            fi
-            systemctl enable rest-api 2>/dev/null; systemctl restart rest-api 2>/dev/null
-            echo -e "${C_GREEN}✅ Rest API started on port ${REST_API_PORT}.${C_RESET}"
-            press_enter ;;
-        2) systemctl stop rest-api 2>/dev/null; echo -e "${C_YELLOW}⏹️ Stopped.${C_RESET}"; press_enter ;;
-        3) systemctl restart rest-api 2>/dev/null; echo -e "${C_GREEN}✅ Restarted.${C_RESET}"; press_enter ;;
-        4) echo -e "\n${C_CYAN}API Endpoint: http://$(curl -s -4 icanhazip.com 2>/dev/null || echo "your-vps-ip"):${REST_API_PORT}${C_RESET}"; press_enter ;;
-        0) return ;;
-        *) invalid_option ;;
-    esac
-}
-
-# ── ON/OFF Service ────────────────────────────────────────
-on_off_service_menu() {
-    while true; do
-        clear; show_banner
-        echo -e "\n   ${C_TITLE}══════════════[ ${C_BOLD}🔛 ON/OFF SERVICE CONTROL ${C_RESET}${C_TITLE}]══════════════${C_RESET}"
-        echo -e "     ${C_DIM}Select a service to toggle ON or OFF${C_RESET}\n"
-        local services=(
-            "dropbear:Dropbear"
-            "openvpn:OpenVPN"
-            "wg-quick@wg0:WireGuard"
-            "hysteria-server:Hysteria"
-            "shadowsocks-libev:ShadowSocks"
-            "danted:Socks5"
-            "slowudp:SlowUDP"
-            "ohp:OHP"
-            "squid:Squid"
-            "stunnel4:Stunnel"
-            "udp-request:UDP-Request"
-            "argo-tunnel:Argo"
-            "badvpn:BadVPN"
-            "udp-custom:UDP-Custom"
-            "zivpn.service:ZiVPN"
-            "dnstt.service:DNSTT"
-            "falconproxy:FalconProxy"
-            "nginx:Nginx"
-            "rest-api:Rest API"
-        )
-        local idx=1
-        local -a svc_names=()
-        for entry in "${services[@]}"; do
-            local svc="${entry%%:*}"
-            local label="${entry##*:}"
-            svc_names+=("$svc")
-            local status="${C_STATUS_I}○ OFF${C_RESET}"
-            systemctl is-active --quiet "$svc" 2>/dev/null && status="${C_STATUS_A}● ON${C_RESET}"
-            printf "     ${C_CHOICE}[%2d]${C_RESET} %-20s %s\n" "$idx" "$label" "$status"
-            ((idx++))
-        done
-        echo -e "\n   ${C_DIM}~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~${C_RESET}"
-        echo -e "     ${C_WARN}[ 0]${C_RESET} ↩️ Return"
-        echo
-        read -p "👉 Select service to toggle: " togg
-        [[ "$togg" == "0" ]] && return
-        if [[ "$togg" =~ ^[0-9]+$ ]] && (( togg >= 1 && togg <= ${#svc_names[@]} )); then
-            local target="${svc_names[$((togg-1))]}"
-            if systemctl is-active --quiet "$target" 2>/dev/null; then
-                systemctl stop "$target" 2>/dev/null
-                echo -e "\n${C_YELLOW}⏹️ Stopped $target${C_RESET}"
-            else
-                systemctl start "$target" 2>/dev/null
-                echo -e "\n${C_GREEN}▶️ Started $target${C_RESET}"
-            fi
-            press_enter
-        else
-            invalid_option
-        fi
-    done
-}
-
-# ── Recover Expired Xray ─────────────────────────────────
-recover_expired_xray() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- ♻️ Recover Expired Xray/V2ray Account ---${C_RESET}"
-    if ! command -v x-ui &>/dev/null; then
-        echo -e "\n${C_YELLOW}ℹ️ X-UI panel not installed. Use Protocol Manager [16] to install.${C_RESET}"
-        press_enter; return
-    fi
-    echo -e "\n${C_YELLOW}Use the X-UI panel or 3X-UI panel to recover expired accounts:${C_RESET}"
-    echo -e "   ${C_CYAN}x-ui${C_RESET} or ${C_CYAN}3x-ui${C_RESET} command → Panel Menu → User List → Edit → Reset Expiry"
-    press_enter
-}
-
-# ── Dropbear Config Menu ─────────────────────────────────
-dropbear_config_menu() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🦘 Dropbear Configuration ---${C_RESET}"
-    if ! command -v dropbear &>/dev/null; then
-        echo -e "\n${C_YELLOW}ℹ️ Dropbear is not installed. Install it via Protocol Manager [20].${C_RESET}"
-        press_enter; return
-    fi
-    local banner_file="/etc/dropbear_banner"
-    echo -e "\n${C_WHITE}Current Status:${C_RESET}"
-    echo -e "   Ports: ${DROPBEAR_PORTS}"
-    echo -e "   Version: $(dropbear -V 2>&1 || echo "unknown")"
-    [[ -f "$banner_file" ]] && echo -e "   Banner: ${C_GREEN}Custom${C_RESET}" || echo -e "   Banner: ${C_DIM}Default${C_RESET}"
-    echo -e "\n${C_BOLD}Options:${C_RESET}\n"
-    printf "  ${C_CHOICE}[ 1]${C_RESET} %-40s\n" "📝 Set Custom Dropbear Banner"
-    printf "  ${C_CHOICE}[ 2]${C_RESET} %-40s\n" "👁️ View Current Banner"
-    printf "  ${C_CHOICE}[ 3]${C_RESET} %-40s\n" "🗑️ Remove Custom Banner"
-    printf "  ${C_CHOICE}[ 4]${C_RESET} %-40s\n" "🔄 Restart Dropbear"
-    echo -e "\n  ${C_WARN}[ 0]${C_RESET} ↩️ Return"
-    echo
-    read -p "👉 Select an option: " db_choice
-    case $db_choice in
-        1) 
-            echo -e "\n${C_DIM}Paste your banner text (CTRL+D to finish):${C_RESET}"
-            cat > "$banner_file"
-            sed -i "s|^DROPBEAR_BANNER=.*|DROPBEAR_BANNER=\"$banner_file\"|" /etc/default/dropbear 2>/dev/null
-            systemctl restart dropbear 2>/dev/null
-            echo -e "${C_GREEN}✅ Banner set.${C_RESET}"
-            press_enter ;;
-        2) 
-            if [[ -f "$banner_file" ]]; then cat "$banner_file"; else echo -e "${C_YELLOW}No custom banner.${C_RESET}"; fi
-            press_enter ;;
-        3) 
-            rm -f "$banner_file"
-            sed -i 's|^DROPBEAR_BANNER=.*|#DROPBEAR_BANNER=""|' /etc/default/dropbear 2>/dev/null
-            systemctl restart dropbear 2>/dev/null
-            echo -e "${C_GREEN}✅ Banner removed.${C_RESET}"
-            press_enter ;;
-        4) systemctl restart dropbear 2>/dev/null; echo -e "${C_GREEN}✅ Restarted.${C_RESET}"; press_enter ;;
-        0) return ;;
-        *) invalid_option ;;
-    esac
-}
-
-# ── Timezone ──────────────────────────────────────────────
-timezone_menu() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🕐 Change Server Timezone ---${C_RESET}"
-    echo -e "\n${C_CYAN}Current timezone: $(timedatectl show --property=Timezone --value 2>/dev/null || echo "unknown")${C_RESET}"
-    echo -e "\n${C_BOLD}Common timezones:${C_RESET}\n"
-    printf "  ${C_CHOICE}[ 1]${C_RESET} %-30s\n" "🌍 UTC"
-    printf "  ${C_CHOICE}[ 2]${C_RESET} %-30s\n" "🇺🇸 America/New_York"
-    printf "  ${C_CHOICE}[ 3]${C_RESET} %-30s\n" "🇬🇧 Europe/London"
-    printf "  ${C_CHOICE}[ 4]${C_RESET} %-30s\n" "🇮🇳 Asia/Kolkata"
-    printf "  ${C_CHOICE}[ 5]${C_RESET} %-30s\n" "🇸🇬 Asia/Singapore"
-    printf "  ${C_CHOICE}[ 6]${C_RESET} %-30s\n" "🇯🇵 Asia/Tokyo"
-    printf "  ${C_CHOICE}[ 7]${C_RESET} %-30s\n" "🇮🇩 Asia/Jakarta"
-    printf "  ${C_CHOICE}[ 8]${C_RESET} %-30s\n" "✏️ Enter Custom Timezone"
-    echo -e "\n  ${C_WARN}[ 0]${C_RESET} ↩️ Return"
-    echo
-    read -p "👉 Select timezone: " tz_choice
-    case $tz_choice in
-        1) timedatectl set-timezone UTC ;;
-        2) timedatectl set-timezone America/New_York ;;
-        3) timedatectl set-timezone Europe/London ;;
-        4) timedatectl set-timezone Asia/Kolkata ;;
-        5) timedatectl set-timezone Asia/Singapore ;;
-        6) timedatectl set-timezone Asia/Tokyo ;;
-        7) timedatectl set-timezone Asia/Jakarta ;;
-        8) read -p "👉 Enter timezone (e.g., Asia/Manila): " custom_tz; timedatectl set-timezone "$custom_tz" 2>/dev/null || echo -e "${C_RED}❌ Invalid.${C_RESET}" ;;
-        0) return ;;
-        *) invalid_option ;;
-    esac
-    echo -e "${C_GREEN}✅ Timezone updated.${C_RESET}"
-    invalidate_banner_cache
-    press_enter
-}
-
-# ── Bypass Proxy Detection ───────────────────────────────
-bypass_proxy_menu() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🚫 Bypass Proxy & Anonymous Traffic ---${C_RESET}"
-    local bp_status="${C_STATUS_I}Disabled${C_RESET}"
-    iptables -C FORWARD -m string --string "anonymous" --algo bm -j DROP 2>/dev/null && bp_status="${C_STATUS_A}Enabled${C_RESET}"
-    echo -e "\n${C_WHITE}Current Status: ${bp_status}${C_RESET}"
-    echo -e "\n${C_BOLD}Options:${C_RESET}\n"
-    printf "  ${C_CHOICE}[ 1]${C_RESET} %-40s\n" "🛡️ Enable Proxy/VPN Detection"
-    printf "  ${C_CHOICE}[ 2]${C_RESET} %-40s\n" "🔓 Disable Proxy/VPN Detection"
-    printf "  ${C_CHOICE}[ 3]${C_RESET} %-40s\n" "📋 View Block Log"
-    echo -e "\n  ${C_WARN}[ 0]${C_RESET} ↩️ Return"
-    echo
-    read -p "👉 Select an option: " bp_choice
-    case $bp_choice in
-        1)
-            iptables -A FORWARD -m string --string "anonymous" --algo bm -j DROP 2>/dev/null
-            iptables -A FORWARD -m string --string "proxy" --algo bm -j DROP 2>/dev/null
-            echo -e "${C_GREEN}✅ Detection enabled.${C_RESET}"
-            press_enter ;;
-        2)
-            iptables -D FORWARD -m string --string "anonymous" --algo bm -j DROP 2>/dev/null
-            iptables -D FORWARD -m string --string "proxy" --algo bm -j DROP 2>/dev/null
-            echo -e "${C_YELLOW}🔓 Disabled.${C_RESET}"
-            press_enter ;;
-        3) echo -e "\n${C_DIM}Check /var/log/syslog for blocked connections.${C_RESET}"; press_enter ;;
-        0) return ;;
-        *) invalid_option ;;
-    esac
-}
-
-# ── Grant Root ────────────────────────────────────────────
-grant_root_menu() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 👑 Grant/Revoke Root Access ---${C_RESET}"
-    echo -e "\n${C_DIM}Users with sudo/root access:${C_RESET}"
-    local sudo_users=()
-    while IFS=: read -r u _ uid _; do
-        [[ "$uid" == "0" ]] && sudo_users+=("$u (root)")
-    done < /etc/passwd
-    getent group sudo 2>/dev/null | cut -d: -f4 | tr ',' '\n' | while read -r u; do
-        [[ -n "$u" && "$u" != "root" ]] && echo -e "   ${C_GREEN}●${C_RESET} $u (sudo)"
-    done
-    echo -e "\n${C_BOLD}Options:${C_RESET}\n"
-    printf "  ${C_CHOICE}[ 1]${C_RESET} %-40s\n" "➕ Grant sudo access to a user"
-    printf "  ${C_CHOICE}[ 2]${C_RESET} %-40s\n" "➖ Revoke sudo access from a user"
-    printf "  ${C_CHOICE}[ 3]${C_RESET} %-40s\n" "📋 List all sudo users"
-    echo -e "\n  ${C_WARN}[ 0]${C_RESET} ↩️ Return"
-    echo
-    read -p "👉 Select an option: " gr_choice
-    case $gr_choice in
-        1)
-            read -p "👉 Username to grant sudo: " gr_user
-            if id "$gr_user" &>/dev/null; then
-                usermod -aG sudo "$gr_user" 2>/dev/null || usermod -aG wheel "$gr_user" 2>/dev/null
-                echo -e "${C_GREEN}✅ Sudo granted to '$gr_user'.${C_RESET}"
-            else
-                echo -e "${C_RED}❌ User '$gr_user' does not exist.${C_RESET}"
-            fi
-            press_enter ;;
-        2)
-            read -p "👉 Username to revoke sudo: " rv_user
-            gpasswd -d "$rv_user" sudo 2>/dev/null || gpasswd -d "$rv_user" wheel 2>/dev/null
-            echo -e "${C_YELLOW}✅ Sudo revoked from '$rv_user'.${C_RESET}"
-            press_enter ;;
-        3)
-            echo -e "\n${C_CYAN}Sudo users:${C_RESET}"
-            getent group sudo 2>/dev/null | cut -d: -f4 | tr ',' '\n' | while read -r u; do [[ -n "$u" ]] && echo "   $u"; done
-            press_enter ;;
-        0) return ;;
-        *) invalid_option ;;
-    esac
-}
-
-# ── Client Details ────────────────────────────────────────
-client_details_menu() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 📊 Client & System Details ---${C_RESET}"
-    refresh_banner_cache
-    local total_users=0 online=0 expired_today=0 locked=0
-    if [[ -s "$DB_FILE" ]]; then
-        while IFS=: read -r u _ e _ _ _ _ _; do
-            [[ -n "$u" && "$u" != \#* ]] && ((total_users++))
-            [[ -n "$e" && "$e" < $(date +%Y-%m-%d) ]] && ((expired_today++))
-        done < "$DB_FILE"
-        online=$(count_managed_online_sessions 2>/dev/null || echo 0)
-        locked=0
-        while IFS=: read -r u _ _ _ _ _ _ _; do
-            if [[ -n "$u" ]]; then
-                local shadow=$(grep "^${u}:" /etc/shadow 2>/dev/null)
-                [[ "$shadow" == *"!"* ]] && ((locked++))
-            fi
-        done < "$DB_FILE"
-    fi
-    local ram_total ram_used ram_pct disk_total disk_used disk_pct
-    ram_total=$(free -m | awk '/^Mem:/{print $2}')
-    ram_used=$(free -m | awk '/^Mem:/{print $3}')
-    ram_pct=$(awk "BEGIN{printf \"%.0f\", ($ram_used/$ram_total)*100}")
-    disk_used=$(df -B1 / | awk 'NR==2{print $3}')
-    disk_total=$(df -B1 / | awk 'NR==2{print $2}')
-    disk_pct=$(awk "BEGIN{printf \"%.0f\", ($disk_used/$disk_total)*100}")
-    echo -e "\n   ${C_TITLE}--- SYSTEM INFO ---${C_RESET}"
-    echo -e "   ${C_GRAY}•${C_RESET} Hostname:    ${C_CYAN}$(hostname)${C_RESET}"
-    echo -e "   ${C_GRAY}•${C_RESET} Kernel:      ${C_CYAN}$(uname -r)${C_RESET}"
-    echo -e "   ${C_GRAY}•${C_RESET} Uptime:      ${C_CYAN}$(uptime -p | sed 's/up //')${C_RESET}"
-    echo -e "   ${C_GRAY}•${C_RESET} CPU:         ${C_CYAN}${BANNER_CACHE_CPU_COUNT} cores (load: ${BANNER_CACHE_CPU_LOAD})${C_RESET}"
-    echo -e "   ${C_GRAY}•${C_RESET} RAM:         ${C_CYAN}${ram_used}MB / ${ram_total}MB (${ram_pct}%)${C_RESET}"
-    echo -e "   ${C_GRAY}•${C_RESET} Disk:        ${C_CYAN}$(numfmt --to=iec $disk_used) / $(numfmt --to=iec $disk_total) (${disk_pct}%)${C_RESET}"
-    echo -e "\n   ${C_TITLE}--- ACCOUNT SUMMARY ---${C_RESET}"
-    echo -e "   ${C_GRAY}•${C_RESET} Total Created:  ${C_CYAN}${total_users}${C_RESET}"
-    echo -e "   ${C_GRAY}•${C_RESET} Online Now:     ${C_GREEN}${online}${C_RESET}"
-    echo -e "   ${C_GRAY}•${C_RESET} Expired Today:  ${C_YELLOW}${expired_today}${C_RESET}"
-    echo -e "   ${C_GRAY}•${C_RESET} Locked:         ${C_RED}${locked}${C_RESET}"
-    echo
-    press_enter
-}
-
-# ── Rebuild VPS ───────────────────────────────────────────
-rebuild_vps_menu() {
-    clear; show_banner
-    echo -e "${C_RED}════════════════════════════════════════════════════${C_RESET}"
-    echo -e "${C_RED}     ⚠️  ⚠️  ⚠️  WARNING ⚠️  ⚠️  ⚠️${C_RESET}"
-    echo -e "${C_RED}════════════════════════════════════════════════════${C_RESET}"
-    echo -e "\n${C_YELLOW}This option requires a provider that supports"
-    echo -e "automatic OS reinstall via netboot/GRUB.${C_RESET}"
-    echo -e "\n${C_DIM}Most providers (Contabo, DigitalOcean, Vultr, Hetzner)"
-    echo -e "require using their control panel to reinstall the OS.${C_RESET}"
-    echo -e "\n${C_DIM}For supported providers, a scripted reinstall option"
-    echo -e "may be added in future releases.${C_RESET}"
-    echo -e "\n${C_CYAN}Detected OS: $(grep -oP 'PRETTY_NAME="\K[^"]+' /etc/os-release 2>/dev/null || echo "Linux")${C_RESET}"
-    echo
-    press_enter
-}
-
-# ═══════════════════════════════════════════════════════════
-# PORT MANAGER
-# ═══════════════════════════════════════════════════════════
-port_manager_menu() {
-    while true; do
-        clear; show_banner
-        echo -e "\n   ${C_TITLE}══════════════[ ${C_BOLD}🔌 PORT MANAGER ${C_RESET}${C_TITLE}]══════════════${C_RESET}"
-        local ports_list=(
-            "SSH:22"
-            "HAProxy:${EDGE_PUBLIC_HTTP_PORT:-80}, ${EDGE_PUBLIC_TLS_PORT:-443}"
-            "ZiVPN:${ZIVPN_LISTEN_PORT:-5667}"
-            "UDP-Custom:${UDP_CUSTOM_LISTEN_PORT:-36712}"
-            "BadVPN:${BADVPN_LISTEN_PORT:-7300}"
-            "DNSTT:53"
-            "Nginx Int:${NGINX_INTERNAL_HTTP_PORT:-8880}, ${NGINX_INTERNAL_TLS_PORT:-8443}"
-            "FalconProxy:$(systemctl is-active --quiet falconproxy 2>/dev/null && (grep -oP '^PORTS="\K[^"]*' $FALCONPROXY_CONFIG_FILE 2>/dev/null || echo 8080) || echo 'not installed')"
-            "Dropbear:${DROPBEAR_PORTS}"
-            "OpenVPN:${OPENVPN_TCP_PORT}, ${OPENVPN_UDP_PORT}, ${OPENVPN_SDNS_PORT}"
-            "WireGuard:${WIREGUARD_PORT}"
-            "Hysteria:${HYSTERIA1_PORT}/${HYSTERIA2_PORT}"
-            "ShadowSocks:${SHADOWSOCKS_PORT}"
-            "Socks5:${SOCKS5_PORT}"
-            "SlowUDP:${SLOWUDP_PORT}"
-            "OHP:${OHP_PORT_1}, ${OHP_PORT_2}, ${OHP_PORT_3}"
-            "Squid:${SQUID_PORT}"
-            "Stunnel:${STUNNEL_PORT}"
-            "UDP-Request:${UDP_REQUEST_PORT}"
-            "Argo:${ARGO_TUNNEL_HTTP}, ${ARGO_TUNNEL_HTTPS}"
-            "Rest-API:${REST_API_PORT}"
-        )
-        local idx=1
-        for entry in "${ports_list[@]}"; do
-            local label="${entry%%:*}"
-            local ports="${entry#*:}"
-            printf "   ${C_CHOICE}[%2d]${C_RESET} %-15s ${C_GRAY}→${C_RESET} ${C_GREEN}%s${C_RESET}\n" "$idx" "$label" "$ports"
-            ((idx++))
-        done
-        echo -e "\n   ${C_DIM}~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~${C_RESET}"
-        echo -e "     ${C_WARN}[ 0]${C_RESET} ↩️ Return"
-        echo
-        read -p "👉 Select a service to edit its port (press Enter for service config): " pm_choice
-        [[ -z "$pm_choice" || "$pm_choice" == "0" ]] && return
-        if [[ "$pm_choice" =~ ^[0-9]+$ ]] && (( pm_choice >= 1 && pm_choice <= ${#ports_list[@]} )); then
-            local selected="${ports_list[$((pm_choice-1))]}"
-            local svc_name="${selected%%:*}"
-            local cur_ports="${selected#*:}"
-            echo -e "\n${C_CYAN}Editing: ${svc_name}${C_RESET}"
-            echo -e "${C_DIM}Current port(s): ${cur_ports}${C_RESET}"
-            read -p "👉 Enter new port(s) (e.g. 1194 or 1194,2200): " new_port
-            if [[ -n "$new_port" ]]; then
-                echo -e "${C_GREEN}⚙️ Updating config and restarting ${svc_name}...${C_RESET}"
-                case "$svc_name" in
-                    SSH)
-                        sed -i "s/^Port .*/Port $new_port/" /etc/ssh/sshd_config 2>/dev/null
-                        systemctl try-restart sshd 2>/dev/null || systemctl try-restart ssh 2>/dev/null
-                        echo -e "${C_GREEN}✅ SSH port changed to $new_port.${C_RESET}" ;;
-                    HAProxy)
-                        sed -i "s/bind \*:[0-9]*/bind *:$new_port/" /etc/haproxy/haproxy.cfg 2>/dev/null
-                        systemctl try-restart haproxy 2>/dev/null
-                        echo -e "${C_GREEN}✅ HAProxy ports updated. Restart manually if syntax changed.${C_RESET}" ;;
-                    ZiVPN)
-                        sed -i "s/\"listen\":.*/\"listen\": \":$new_port\",/" /etc/zivpn/config.json 2>/dev/null
-                        systemctl try-restart zivpn 2>/dev/null
-                        ZIVPN_LISTEN_PORT="$new_port" ;;
-                    Dropbear)
-                        sed -i "s/^DROPBEAR_PORT=.*/DROPBEAR_PORT=$new_port/" /etc/default/dropbear 2>/dev/null
-                        systemctl try-restart dropbear 2>/dev/null
-                        DROPBEAR_PORTS="$new_port" ;;
-                    OpenVPN)
-                        IFS=',' read -ra p <<< "$new_port"
-                        local _tcp="${p[0]:-1194}" _udp="${p[1]:-2200}" _sdns="${p[2]:-25000}"
-                        sed -i "s/^port .*/port $_tcp/" /etc/openvpn/server-tcp.conf 2>/dev/null
-                        sed -i "s/^port .*/port $_udp/" /etc/openvpn/server-udp.conf 2>/dev/null
-                        sed -i "s/^port .*/port $_sdns/" /etc/openvpn/server-sdns.conf 2>/dev/null
-                        systemctl try-restart openvpn@server-tcp 2>/dev/null
-                        systemctl try-restart openvpn@server-udp 2>/dev/null
-                        OPENVPN_TCP_PORT="$_tcp"; OPENVPN_UDP_PORT="$_udp"; OPENVPN_SDNS_PORT="$_sdns" ;;
-                    WireGuard)
-                        sed -i "s/^ListenPort = .*/ListenPort = $new_port/" /etc/wireguard/wg0.conf 2>/dev/null
-                        wg-quick down wg0 2>/dev/null; wg-quick up wg0 2>/dev/null
-                        WIREGUARD_PORT="$new_port" ;;
-                    Hysteria)
-                        IFS='/' read -ra p <<< "$new_port"
-                        local _h1="${p[0]:-20000}" _h2="${p[1]:-20001}"
-                        sed -i "s/\"listen\":.*/\"listen\": \":$_h2\",/" /etc/hysteria/config.json 2>/dev/null
-                        systemctl try-restart hysteria-server 2>/dev/null
-                        HYSTERIA1_PORT="$_h1"; HYSTERIA2_PORT="$_h2" ;;
-                    ShadowSocks)
-                        sed -i "s/\"server_port\":.*/\"server_port\": $new_port,/" /etc/shadowsocks-libev/config.json 2>/dev/null
-                        systemctl try-restart shadowsocks-libev 2>/dev/null
-                        SHADOWSOCKS_PORT="$new_port" ;;
-                    Socks5)
-                        sed -i "s/internal:.*port = .*/internal: 0.0.0.0 port = $new_port/" /etc/danted.conf 2>/dev/null
-                        systemctl try-restart danted 2>/dev/null
-                        SOCKS5_PORT="$new_port" ;;
-                    SlowUDP)
-                        sed -i "s/-port .*/-port $new_port/" /etc/systemd/system/slowudp.service 2>/dev/null
-                        systemctl daemon-reload; systemctl try-restart slowudp 2>/dev/null
-                        SLOWUDP_PORT="$new_port" ;;
-                    OHP)
-                        IFS=',' read -ra p <<< "$new_port"
-                        local _o1="${p[0]:-8181}" _o2="${p[1]:-8282}" _o3="${p[2]:-8383}"
-                        sed -i "s/-port .*/-port $_o1,$_o2,$_o3/" /etc/systemd/system/ohp.service 2>/dev/null
-                        systemctl daemon-reload; systemctl try-restart ohp 2>/dev/null
-                        OHP_PORT_1="$_o1"; OHP_PORT_2="$_o2"; OHP_PORT_3="$_o3" ;;
-                    Squid)
-                        sed -i "s/http_port .*/http_port $new_port/" /etc/squid/squid.conf 2>/dev/null
-                        systemctl try-restart squid 2>/dev/null
-                        SQUID_PORT="$new_port" ;;
-                    Stunnel)
-                        echo -e "${C_YELLOW}⚠️ Update /etc/stunnel/*.conf manually with new port.${C_RESET}"
-                        STUNNEL_PORT="$new_port" ;;
-                    UDP-Request)
-                        sed -i "s/-port .*/-port $new_port/" /etc/systemd/system/udp-request.service 2>/dev/null
-                        systemctl daemon-reload; systemctl try-restart udp-request 2>/dev/null
-                        UDP_REQUEST_PORT="$new_port" ;;
-                    Argo)
-                        echo -e "${C_YELLOW}⚠️ Argo tunnel port configured via cloudflared config. Update manually.${C_RESET}" ;;
-                    Rest-API)
-                        sed -i "s/PORT = .*/PORT = $new_port/" /usr/local/bin/skylartech-api.py 2>/dev/null
-                        systemctl try-restart rest-api 2>/dev/null
-                        REST_API_PORT="$new_port" ;;
-                    *) echo -e "${C_YELLOW}Manual config change required for this service.${C_RESET}" ;;
-                esac
-                echo -e "${C_GREEN}✅ Port updated and service restarted for ${svc_name}.${C_RESET}"
-            fi
-            press_enter
-        else
-            invalid_option
-        fi
-    done
-}
-
-# ═══════════════════════════════════════════════════════════
-# SERVICE INFO
-# ═══════════════════════════════════════════════════════════
-service_info_menu() {
-    while true; do
-        clear; show_banner
-        echo -e "\n   ${C_TITLE}══════════════[ ${C_BOLD}ℹ️ SERVICE INFORMATION ${C_RESET}${C_TITLE}]══════════════${C_RESET}"
-        local idx=1
-        local -a svc_keys=()
-        for entry in "${SERVICE_INFO_DB[@]}"; do
-            local name="${entry%%:*}"
-            svc_keys+=("$name")
-            printf "   ${C_CHOICE}[%2d]${C_RESET} %-20s\n" "$idx" "$name"
-            ((idx++))
-        done
-        echo -e "\n   ${C_DIM}~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~${C_RESET}"
-        printf "   ${C_CHOICE}[N]${C_RESET} %-20s\n" "📂 Nano Paths & Exports"
-        echo -e "     ${C_WARN}[ 0]${C_RESET} ↩️ Return"
-        echo
-        read -p "👉 Select a service to view info: " si_choice
-        [[ "$si_choice" == "0" ]] && return
-        if [[ "$si_choice" =~ ^[Nn]$ ]]; then
-            clear; show_banner
-            echo -e "\n   ${C_TITLE}══════════════[ ${C_BOLD}📂 CONFIG FILE PATHS ${C_RESET}${C_TITLE}]══════════════${C_RESET}"
-            echo -e "\n   ${C_CYAN}── Copy any path and paste after 'nano ' in terminal ──${C_RESET}\n"
-            echo -e "   ${C_WHITE}── SSH / Dropbear${C_RESET}"
-            echo -e "      ${C_DIM}nano /etc/ssh/sshd_config${C_RESET}"
-            echo -e "      ${C_DIM}nano /etc/default/dropbear${C_RESET}"
-            echo
-            echo -e "   ${C_WHITE}── HAProxy / Nginx${C_RESET}"
-            echo -e "      ${C_DIM}nano /etc/haproxy/haproxy.cfg${C_RESET}"
-            echo -e "      ${C_DIM}nano /etc/nginx/nginx.conf${C_RESET}"
-            echo
-            echo -e "   ${C_WHITE}── ZiVPN${C_RESET}"
-            echo -e "      ${C_DIM}nano /etc/zivpn/config.json${C_RESET}"
-            echo
-            echo -e "   ${C_WHITE}── UDP-Custom${C_RESET}"
-            echo -e "      ${C_DIM}nano /etc/udp-custom/config.json${C_RESET}"
-            echo
-            echo -e "   ${C_WHITE}── DNSTT (SlowDNS)${C_RESET}"
-            echo -e "      ${C_DIM}nano /etc/dnstt/server.conf${C_RESET}"
-            echo
-            echo -e "   ${C_WHITE}── BadVPN / Falcon Proxy${C_RESET}"
-            echo -e "      ${C_DIM}nano /etc/systemd/system/badvpn.service${C_RESET}"
-            echo -e "      ${C_DIM}nano /etc/systemd/system/falcon-proxy.service${C_RESET}"
-            echo
-            echo -e "   ${C_WHITE}── OpenVPN${C_RESET}"
-            echo -e "      ${C_DIM}nano /etc/openvpn/server-tcp.conf${C_RESET}"
-            echo -e "      ${C_DIM}nano /etc/openvpn/server-udp.conf${C_RESET}"
-            echo -e "      ${C_DIM}nano /etc/openvpn/server-sdns.conf${C_RESET}"
-            echo -e "      ${C_DIM}nano /etc/openvpn/easy-rsa/vars${C_RESET}"
-            echo -e "      ${C_DIM}cat ${EXPORTS_DIR}/<username>.ovpn${C_RESET}"
-            echo
-            echo -e "   ${C_WHITE}── WireGuard${C_RESET}"
-            echo -e "      ${C_DIM}nano /etc/wireguard/wg0.conf${C_RESET}"
-            echo -e "      ${C_DIM}cat /etc/wireguard/server.pub${C_RESET}"
-            echo -e "      ${C_DIM}cat ${EXPORTS_DIR}/<username>.conf${C_RESET}"
-            echo
-            echo -e "   ${C_WHITE}── Hysteria2${C_RESET}"
-            echo -e "      ${C_DIM}nano /etc/hysteria/config.json${C_RESET}"
-            echo -e "      ${C_DIM}cat ${EXPORTS_DIR}/<username>-hysteria.json${C_RESET}"
-            echo
-            echo -e "   ${C_WHITE}── ShadowSocks${C_RESET}"
-            echo -e "      ${C_DIM}nano /etc/shadowsocks-libev/config.json${C_RESET}"
-            echo
-            echo -e "   ${C_WHITE}── SOCKS5 (Dante)${C_RESET}"
-            echo -e "      ${C_DIM}nano /etc/danted.conf${C_RESET}"
-            echo
-            echo -e "   ${C_WHITE}── SlowUDP / OHP / UDP-Request (systemd)${C_RESET}"
-            echo -e "      ${C_DIM}nano /etc/systemd/system/slowudp.service${C_RESET}"
-            echo -e "      ${C_DIM}nano /etc/systemd/system/ohp.service${C_RESET}"
-            echo -e "      ${C_DIM}nano /etc/systemd/system/udp-request.service${C_RESET}"
-            echo
-            echo -e "   ${C_WHITE}── Squid${C_RESET}"
-            echo -e "      ${C_DIM}nano /etc/squid/squid.conf${C_RESET}"
-            echo
-            echo -e "   ${C_WHITE}── Stunnel${C_RESET}"
-            echo -e "      ${C_DIM}nano /etc/stunnel/stunnel.conf${C_RESET}"
-            echo
-            echo -e "   ${C_WHITE}── Argo Tunnel (Cloudflared)${C_RESET}"
-            echo -e "      ${C_DIM}cloudflared tunnel list${C_RESET}"
-            echo -e "      ${C_DIM}cloudflared tunnel info <name>${C_RESET}"
-            echo
-            echo -e "   ${C_CYAN}── Fetch User Configs (replace <username>)${C_RESET}"
-            echo -e "      ${C_DIM}cat ${EXPORTS_DIR}/<username>.ovpn${C_RESET}"
-            echo -e "      ${C_DIM}cat ${EXPORTS_DIR}/<username>.conf${C_RESET}"
-            echo -e "      ${C_DIM}cat ${EXPORTS_DIR}/<username>-hysteria.json${C_RESET}"
-            echo -e "      ${C_DIM}scp root@<server-ip>:${EXPORTS_DIR}/<username>.ovpn .${C_RESET}"
-            echo
-            echo -e "   ${C_YELLOW}💡 Tip: Replace <username> with the actual username from the user list.${C_RESET}"
-            echo
-            press_enter
-        elif [[ "$si_choice" =~ ^[0-9]+$ ]] && (( si_choice >= 1 && si_choice <= ${#SERVICE_INFO_DB[@]} )); then
-            local entry="${SERVICE_INFO_DB[$((si_choice-1))]}"
-            local name="${entry%%:*}"
-            local info="${entry#*:}"
-            IFS='.' read -r desc default conflicts <<< "$info"
-            echo -e "\n   ${C_TITLE}══════════════[ ${C_BOLD}${name} ${C_RESET}${C_TITLE}]══════════════${C_RESET}"
-            echo -e "\n   ${C_CYAN}📝 Description:${C_RESET}"
-            echo -e "   ${desc}"
-            echo -e "\n   ${C_CYAN}⚙️  Default Port(s):${C_RESET}"
-            echo -e "   ${default}"
-            echo -e "\n   ${C_CYAN}⚠️  Conflict Warnings:${C_RESET}"
-            echo -e "   ${conflicts}"
-            echo
-            press_enter
-        else
-            invalid_option
-        fi
-    done
-}
-
-# ═══════════════════════════════════════════════════════════
-# DUCKDNS — FREE DYNAMIC DNS
-# ═══════════════════════════════════════════════════════════
-
-_duckdns_update() {
-    local conf="$DUCKDNS_CONFIG_FILE"
-    [[ -f "$conf" ]] || return 1
-    source "$conf"
-    [[ -n "$DUCKDNS_TOKEN" && -n "$DUCKDNS_DOMAIN" ]] || return 1
-    local reply
-    reply=$(curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=" 2>/dev/null)
-    echo "$reply"
-}
-
-duckdns_menu() {
-    while true; do
-        clear; show_banner
-        echo -e "${C_BOLD}${C_PURPLE}--- 🦆 DuckDNS — Free Dynamic DNS ---${C_RESET}"
-
-        local status="${C_STATUS_I}Not configured${C_RESET}"
-        local domain_info=""
-        if [[ -f "$DUCKDNS_CONFIG_FILE" ]]; then
-            source "$DUCKDNS_CONFIG_FILE"
-            if [[ -n "$DUCKDNS_DOMAIN" && -n "$DUCKDNS_TOKEN" ]]; then
-                status="${C_STATUS_A}Configured${C_RESET}"
-                domain_info="${C_GREEN}${DUCKDNS_DOMAIN}.duckdns.org${C_RESET}"
-                local cron_on
-                cron_on=$(crontab -l 2>/dev/null | grep -c "duckdns.org/update" || true)
-                if (( cron_on > 0 )); then
-                    domain_info+=" ${C_STATUS_A}(auto-update ON)${C_RESET}"
-                else
-                    domain_info+=" ${C_WARN}(no auto-update)${C_RESET}"
-                fi
-            fi
-        fi
-
-        echo -e "\n${C_WHITE}Status: ${status}${C_RESET}"
-        [[ -n "$domain_info" ]] && echo -e "${C_WHITE}Domain: ${domain_info}${C_RESET}"
-
-        echo -e "\n${C_BOLD}${C_YELLOW}── What is DuckDNS? ──${C_RESET}"
-        echo -e "${C_DIM}DuckDNS is a FREE dynamic DNS service. It gives you a${C_RESET}"
-        echo -e "${C_DIM}subdomain like ${C_CYAN}yourname.duckdns.org${C_RESET}${C_DIM} that always points to${C_RESET}"
-        echo -e "${C_DIM}your server, even if your IP changes. Perfect for users${C_RESET}"
-        echo -e "${C_DIM}who don't have a custom domain.${C_RESET}"
-
-        echo -e "\n${C_BOLD}Options:${C_RESET}\n"
-        printf "  ${C_CHOICE}[ 1]${C_RESET} %-40s\n" "🦆 Setup DuckDNS"
-        printf "  ${C_CHOICE}[ 2]${C_RESET} %-40s\n" "🔄 Test Update Now"
-        printf "  ${C_CHOICE}[ 3]${C_RESET} %-40s\n" "👁️ View Config"
-        [[ -f "$DUCKDNS_CONFIG_FILE" ]] && printf "  ${C_DANGER}[ 4]${C_RESET} %-40s\n" "🗑️ Remove DuckDNS"
-        echo -e "\n  ${C_WARN}[ 0]${C_RESET} ↩️ Return"
-        echo
-        read -p "👉 Select an option: " dd_choice
-        case $dd_choice in
-            1) duckdns_setup ;;
-            2)
-                echo -e "\n${C_BLUE}🔄 Testing DuckDNS update...${C_RESET}"
-                local result
-                result=$(_duckdns_update)
-                if [[ "$result" == "OK" ]]; then
-                    echo -e "${C_GREEN}✅ Success! ${DUCKDNS_DOMAIN}.duckdns.org now points to your server.${C_RESET}"
-                else
-                    echo -e "${C_RED}❌ Failed. Response: $result${C_RESET}"
-                fi
-                press_enter ;;
-            3)
-                if [[ -f "$DUCKDNS_CONFIG_FILE" ]]; then
-                    source "$DUCKDNS_CONFIG_FILE"
-                    echo -e "\n${C_CYAN}Domain: ${DUCKDNS_DOMAIN}.duckdns.org${C_RESET}"
-                    echo -e "${C_CYAN}Token:  ${DUCKDNS_TOKEN:0:8}...${C_RESET}"
-                    local cron_on
-                    cron_on=$(crontab -l 2>/dev/null | grep -c "duckdns.org/update" || true)
-                    if (( cron_on > 0 )); then
-                        echo -e "${C_GREEN}Auto-update: Active (every 5 min)${C_RESET}"
-                    else
-                        echo -e "${C_YELLOW}Auto-update: Not active${C_RESET}"
-                    fi
-                else
-                    echo -e "\n${C_YELLOW}Not configured.${C_RESET}"
-                fi
-                press_enter ;;
-            4)
-                if [[ -f "$DUCKDNS_CONFIG_FILE" ]]; then
-                    echo -e "\n${C_YELLOW}⚠️  Remove DuckDNS? This will:${C_RESET}"
-                    echo -e "   • Delete your DuckDNS config (domain + token)"
-                    echo -e "   • Remove the auto-update cron job"
-                    echo -e "   • Leave your banner domain as-is"
-                    echo
-                    read -p "👉 Type 'yes' to confirm: " confirm_rm
-                    if [[ "$confirm_rm" != "yes" ]]; then
-                        echo -e "\n${C_GREEN}✅ Cancelled.${C_RESET}"
-                        press_enter; continue
-                    fi
-                    echo -e "\n${C_YELLOW}Removing DuckDNS config...${C_RESET}"
-                    crontab -l 2>/dev/null | grep -v "duckdns.org/update" | crontab - 2>/dev/null || true
-                    rm -f "$DUCKDNS_CONFIG_FILE"
-                    echo -e "${C_GREEN}✅ DuckDNS removed.${C_RESET}"
-                    press_enter
-                fi ;;
-            0) return ;;
-            *) invalid_option ;;
-        esac
-    done
-}
-
-duckdns_setup() {
-    clear; show_banner
-    echo -e "${C_BOLD}${C_PURPLE}--- 🦆 DuckDNS Setup ---${C_RESET}"
-
-    echo -e "\n${C_BOLD}${C_YELLOW}═══════════════════ GETTING YOUR DUCKDNS DOMAIN ═══════════════════${C_RESET}"
-    echo -e "${C_DIM}"
-    echo -e "  Follow these steps to get your free domain and token:"
-    echo -e ""
-    echo -e "  ${C_WHITE}Step 1:${C_DIM} Open https://duckdns.org in your browser"
-    echo -e "  ${C_WHITE}Step 2:${C_DIM} Sign in using one of these methods:"
-    echo -e "         • GitHub    • Google    • Twitter"
-    echo -e "  ${C_WHITE}Step 3:${C_DIM} Under \"Domains\", enter a name you want and click"
-    echo -e "         [add domain] — e.g. ${C_CYAN}myserver${C_DIM}"
-    echo -e "  ${C_WHITE}Step 4:${C_DIM} Your domain will be: ${C_CYAN}myserver.duckdns.org${C_DIM}"
-    echo -e "  ${C_WHITE}Step 5:${C_DIM} Copy the ${C_CYAN}token${C_DIM} shown on the dashboard — it's a"
-    echo -e "         long string of letters and numbers. You'll need it below."
-    echo -e "${C_RESET}"
-    echo -e "${C_BOLD}${C_YELLOW}════════════════════════════════════════════════════════════════${C_RESET}"
-
-    if [[ -f "$DUCKDNS_CONFIG_FILE" ]]; then
-        source "$DUCKDNS_CONFIG_FILE"
-        echo -e "\n${C_YELLOW}ℹ️ Already configured for ${DUCKDNS_DOMAIN}.duckdns.org${C_RESET}"
-        read -p "👉 Overwrite? (y/n): " overwrite
-        [[ "$overwrite" != "y" && "$overwrite" != "Y" ]] && return
-    fi
-
-    echo
-    read -p "👉 Enter your DuckDNS domain name (without .duckdns.org): " dd_domain
-    [[ -z "$dd_domain" ]] && { echo -e "${C_RED}❌ Domain required.${C_RESET}"; press_enter; return; }
-
-    read -p "👉 Enter your DuckDNS token: " dd_token
-    [[ -z "$dd_token" ]] && { echo -e "${C_RED}❌ Token required.${C_RESET}"; press_enter; return; }
-
-    echo -e "\n${C_BLUE}🔄 Testing API with your domain and token...${C_RESET}"
-    local reply
-    reply=$(curl -s "https://www.duckdns.org/update?domains=${dd_domain}&token=${dd_token}&ip=" 2>/dev/null)
-    if [[ "$reply" == "OK" ]]; then
-        echo -e "${C_GREEN}✅ API test passed!${C_RESET}"
-    else
-        echo -e "${C_RED}❌ API test failed. Response: '${reply}'${C_RESET}"
-        echo -e "${C_YELLOW}Double-check your domain name and token at https://duckdns.org${C_RESET}"
-        press_enter; return
-    fi
-
-    mkdir -p "$DB_DIR" 2>/dev/null
-    cat > "$DUCKDNS_CONFIG_FILE" <<EOF
-DUCKDNS_DOMAIN="${dd_domain}"
-DUCKDNS_TOKEN="${dd_token}"
-EOF
-
-    # Set up cron for auto-update every 5 minutes
-    local cron_job="${DUCKDNS_CRON_SCHED} curl -s 'https://www.duckdns.org/update?domains=${dd_domain}&token=${dd_token}&ip=' >/dev/null 2>&1"
-    (crontab -l 2>/dev/null | grep -v "duckdns.org/update"; echo "$cron_job") | crontab - 2>/dev/null
-    echo -e "${C_GREEN}✅ Cron job installed (updates every 5 minutes).${C_RESET}"
-
-    # Auto-set as display domain
-    echo "${dd_domain}.duckdns.org" > "$DOMAIN_OVERRIDE_FILE"
-    BANNER_CACHE_DOMAIN=""
-    echo -e "${C_GREEN}✅ Domain set in banner: ${dd_domain}.duckdns.org${C_RESET}"
-
-    echo -e "\n${C_GREEN}════════════════════════════════════════════════════════${C_RESET}"
-    echo -e "${C_GREEN}  🦆 DuckDNS is live! Your domain:${C_RESET}"
-    echo -e "${C_GREEN}  ${C_CYAN}${dd_domain}.duckdns.org${C_RESET}"
-    echo -e "${C_GREEN}  It will auto-update every 5 minutes.${C_RESET}"
-    echo -e "${C_GREEN}  Use this domain for your services and SSL.${C_RESET}"
-    echo -e "${C_GREEN}════════════════════════════════════════════════════════${C_RESET}"
-    press_enter
 }
 
 if [[ "$1" == "--install-setup" ]]; then
