@@ -1,5 +1,5 @@
 #!/bin/bash
-# Simulate the skylartech-manager menu rendering - standalone
+# Simulate the VPS_superScript-manager menu rendering - standalone
 
 # Color palette (matches menu.sh)
 C_RESET=$'\033[0m'
@@ -27,7 +27,7 @@ C_ACCENT=$C_ORANGE
 BANNER_CACHE_BASE="Ubuntu"
 BANNER_CACHE_CPU_LOAD="0.15"
 BANNER_CACHE_CPU_COUNT="2"
-BANNER_CACHE_DOMAIN="skylartech.space"
+BANNER_CACHE_DOMAIN="VPS_superScript.space"
 BANNER_CACHE_TOTAL_USERS="12"
 BANNER_CACHE_UP_TIME="(2)wks (3)days"
 BANNER_CACHE_IP="192.168.1.100"
@@ -36,7 +36,7 @@ BANNER_CACHE_OS_NAME="Ubuntu 22.04"
 clear_screen() { printf '\033[2J\033[H'; }
 
 show_banner_sim() {
-    echo -e "${C_TITLE}          Skylartech ${C_RESET}${C_DIM}| Premium Edition V1.0.0         ${C_RESET}"
+    echo -e "${C_TITLE}          VPS_superScript ${C_RESET}${C_DIM}| Premium Edition V1.0.0         ${C_RESET}"
     echo -e "${C_BLUE}   ─────────────────────────────────────────────────────${C_RESET}"
     printf "   ${C_GRAY}◦ %-6s${C_RESET} ${C_GREEN}%-19s${C_RESET} ${C_GRAY}◦ %-6s${C_RESET} ${C_GREEN}%s${C_RESET}\n" "Base" "$BANNER_CACHE_BASE" "Load" "$BANNER_CACHE_CPU_LOAD"
     printf "   ${C_GRAY}◦ %-6s${C_RESET} ${C_GREEN}%-19s${C_RESET} ${C_GRAY}◦ %-6s${C_RESET} ${C_GREEN}%s${C_RESET}\n" "CPU'S" "$BANNER_CACHE_CPU_COUNT" "Domain" "$BANNER_CACHE_DOMAIN"

@@ -1,6 +1,6 @@
 <div align="center">
-  <img src="https://img.shields.io/badge/Skylartech-blue?style=for-the-badge&logo=shield" alt="Skylartech" />
-  <h1>🦅 Skylartech | Premium Edition V1.0.0</h1>
+  <img src="https://img.shields.io/badge/VPS_superScript-blue?style=for-the-badge&logo=shield" alt="VPS_superScript" />
+  <h1>🦅 VPS_superScript | Premium Edition V1.0.0</h1>
   <p><b>The ultimate, lightning-fast, and beautiful terminal UI manager for VPN tunneling, protocol deployments, and advanced user administration on Linux servers.</b></p>
   
   <img src="https://img.shields.io/badge/platform-linux-lightgrey?style=flat-square" alt="Platform">
@@ -10,9 +10,9 @@
 
 ---
 
-## ✨ Why Skylartech?
+## ✨ Why VPS_superScript?
 
-Skylartech is built with an **obsessive focus on speed, fluidity, and aesthetics**. We took the traditional chunky script and refined it into a gorgeous, highly responsive, and relentlessly efficient terminal experience.
+VPS_superScript is built with an **obsessive focus on speed, fluidity, and aesthetics**. We took the traditional chunky script and refined it into a gorgeous, highly responsive, and relentlessly efficient terminal experience.
 
 Whether you're managing 5 users or 500, deploying complex protocols, or locking down your server traffic—you can do it all in seconds, with zero frustration.
 
@@ -20,15 +20,15 @@ Whether you're managing 5 users or 500, deploying complex protocols, or locking 
 
 ## 🚀 Installation
 
-It takes less than a minute to deploy the complete Skylartech Manager on your fresh VPS.
+It takes less than a minute to deploy the complete VPS_superScript Manager on your fresh VPS.
 
 ### Primary Method (Recommended)
 ```bash
-bash <(curl -Ls https://github.com/SONICE-ENCHIL/skylartech-SSH/raw/main/install.sh)
+bash <(curl -Ls https://github.com/SONICE-ENCHIL/VPS_superScript/raw/main/install.sh)
 ```
 
 > **🔄 Upgrading from an existing FirewallFalcon installation?**  
-> The installer automatically detects your old setup and safely migrates all data — users, bandwidth logs, SSL certificates, banners, trial accounts, HWID locks, DNSTT keys, and backups — to the new Skylartech paths. Nothing is lost.
+> The installer automatically detects your old setup and safely migrates all data — users, bandwidth logs, SSL certificates, banners, trial accounts, HWID locks, DNSTT keys, and backups — to the new VPS_superScript paths. Nothing is lost.
 
 *(Once installed, simply type `menu` in your terminal to launch the interface!)*
 
@@ -75,7 +75,7 @@ Easily spin up entire tunneling infrastructures onto your server without touchin
 ## 🖥️ Preview
 
 ```
-          Skylartech | Premium Edition V1.0.0
+          VPS_superScript | Premium Edition V1.0.0
    ─────────────────────────────────────────────────────
    ◦ Base   Ubuntu 22.04           ◦ Load   0.21
    ◦ CPU'S  2                      ◦ Domain vpn.example.com
@@ -94,12 +94,12 @@ Easily spin up entire tunneling infrastructures onto your server without touchin
 
 ## 💬 Community & Support
 
-* Maintained by **Skylartech (SONICE-ENCHIL)**
+* Maintained by **VPS_superScript (SONICE-ENCHIL)**
 * For issues, suggestions, or contributions — open an issue on GitHub.
 
 ---
 
 <div align="center">
-  <b>Built by Skylartech</b><br>
+  <b>Built by VPS_superScript</b><br>
   <i>"Fast configuration, Secure tunneling, Beautiful interfaces."</i>
 </div>

@@ -7,14 +7,14 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-echo "Installing Skylartech Manager..."
+echo "Installing VPS_superScript Manager..."
 
 # URLs (IPv4 forced to avoid GitHub IPv6 issues)
 # Override these to install from your own fork, e.g.:
 #   FF_REPO_HOST=github FF_REPO_OWNER=youruser FF_REPO_NAME=YourRepo bash install.sh
 FF_REPO_HOST="${FF_REPO_HOST:-github}"
 FF_REPO_OWNER="${FF_REPO_OWNER:-SONICE-ENCHIL}"
-FF_REPO_NAME="${FF_REPO_NAME:-skylartech-SSH}"
+FF_REPO_NAME="${FF_REPO_NAME:-VPS_superScript}"
 FF_REPO_BRANCH="${FF_REPO_BRANCH:-main}"
 
 if [[ "$FF_REPO_HOST" == "github" ]]; then
@@ -46,7 +46,7 @@ download_file /usr/local/bin/menu "$MENU_URL"
 sed -i 's/\r$//' /usr/local/bin/menu 2>/dev/null || true
 chmod +x /usr/local/bin/menu
 
-echo "Applying Skylartech SSH configuration..."
+echo "Applying VPS_superScript SSH configuration..."
 
 SSHD_CONFIG="/etc/ssh/sshd_config"
 BACKUP="/etc/ssh/sshd_config.backup.$(date +%F-%H%M%S)"
@@ -54,7 +54,7 @@ BACKUP="/etc/ssh/sshd_config.backup.$(date +%F-%H%M%S)"
 # Backup current SSH config
 cp "$SSHD_CONFIG" "$BACKUP"
 
-# Download Skylartech SSH config
+# Download VPS_superScript SSH config
 download_file "$SSHD_CONFIG" "$SSHD_URL"
 chmod 600 "$SSHD_CONFIG"
 
@@ -98,7 +98,7 @@ else
     echo "SSH config applied but service was not restarted automatically."
 fi
 
-# Run Skylartech setup
+# Run VPS_superScript setup
 bash /usr/local/bin/menu --install-setup
 
 echo "Installation complete!"
