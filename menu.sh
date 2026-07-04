@@ -6285,6 +6285,10 @@ HYCEOF
     echo -e "  - 🕐 Auto-expires at:   ${C_RED}$expiry_timestamp${C_RESET}"
     echo -e "  - 📶 Connection Limit:  ${C_YELLOW}$limit${C_RESET}"
     echo -e "  - 📦 Bandwidth Limit:   ${C_YELLOW}$bw_display${C_RESET}"
+    if [[ "$app" == "http" ]]; then
+        local _udp_ip; _udp_ip=$(curl -s -4 icanhazip.com 2>/dev/null || echo "SERVER_IP")
+        echo -e "  - 📡 UDP-CUSTOM:        ${C_CYAN}${_udp_ip}:1-65535@${username}:${password}${C_RESET}"
+    fi
     echo -e "${C_YELLOW}========================================${C_RESET}"
     echo -e "\n${C_DIM}The account will be automatically deleted when the trial expires.${C_RESET}"
     
