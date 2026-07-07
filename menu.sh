@@ -2661,7 +2661,7 @@ _ff_udp_session_blip() {
                 badvpn)                  port="$BADVPN_LISTEN_PORT" ;;
                 udpgw)                   port="" ;;  # localhost only, no external port to flush
                 hysteria-server)         port="$HYSTERIA2_PORT" ;;
-                shadowsocks-libev-server) port="$SHADOWSOCKS_PORT" ;;
+                shadowsocks-libev) port="$SHADOWSOCKS_PORT" ;;
                 slowudp)                 port="$SLOWUDP_PORT" ;;
                 udp-request)             port="$UDP_REQUEST_PORT" ;;
                 *)                       port="" ;;
@@ -2750,7 +2750,7 @@ _ff_restore_user_all_protocols() {
     fi
     systemctl is-active --quiet udp-custom 2>/dev/null && systemctl try-restart udp-custom.service 2>/dev/null
     systemctl is-active --quiet hysteria-server 2>/dev/null && systemctl try-restart hysteria-server 2>/dev/null
-    systemctl is-active --quiet shadowsocks-libev-server 2>/dev/null && systemctl try-restart shadowsocks-libev-server 2>/dev/null
+    systemctl is-active --quiet shadowsocks-libev 2>/dev/null && systemctl try-restart shadowsocks-libev 2>/dev/null
     systemctl is-active --quiet slowudp 2>/dev/null && systemctl try-restart slowudp 2>/dev/null
     systemctl is-active --quiet udp-request 2>/dev/null && systemctl try-restart udp-request 2>/dev/null
 }
@@ -2793,7 +2793,7 @@ lock_user() {
         systemctl is-active --quiet badvpn 2>/dev/null && blip+=(badvpn)
         systemctl is-active --quiet udpgw 2>/dev/null && blip+=(udpgw)
         systemctl is-active --quiet hysteria-server 2>/dev/null && blip+=(hysteria-server)
-        systemctl is-active --quiet shadowsocks-libev-server 2>/dev/null && blip+=(shadowsocks-libev-server)
+        systemctl is-active --quiet shadowsocks-libev 2>/dev/null && blip+=(shadowsocks-libev)
         systemctl is-active --quiet slowudp 2>/dev/null && blip+=(slowudp)
         systemctl is-active --quiet udp-request 2>/dev/null && blip+=(udp-request)
         [[ "$zivpn_changed" == true ]] && blip+=(zivpn)
@@ -2834,7 +2834,7 @@ unlock_user() {
     # Restart UDP services to clear any stale auth cache from the lock period.
     systemctl is-active --quiet udp-custom 2>/dev/null && systemctl try-restart udp-custom.service 2>/dev/null
     systemctl is-active --quiet hysteria-server 2>/dev/null && systemctl try-restart hysteria-server 2>/dev/null
-    systemctl is-active --quiet shadowsocks-libev-server 2>/dev/null && systemctl try-restart shadowsocks-libev-server 2>/dev/null
+    systemctl is-active --quiet shadowsocks-libev 2>/dev/null && systemctl try-restart shadowsocks-libev 2>/dev/null
     systemctl is-active --quiet slowudp 2>/dev/null && systemctl try-restart slowudp 2>/dev/null
     systemctl is-active --quiet udp-request 2>/dev/null && systemctl try-restart udp-request 2>/dev/null
 }
@@ -5020,7 +5020,7 @@ drop_ip() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - KICKED $ip (wrong HWID) for $who" >> "$KICK_LOG"
 }
 
-journalctl -u udp-custom -u zivpn -u hysteria-server -u shadowsocks-libev-server -u slowudp -u udp-request -n0 -f --no-pager 2>/dev/null | while IFS= read -r line; do
+journalctl -u udp-custom -u zivpn -u hysteria-server -u shadowsocks-libev -u slowudp -u udp-request -n0 -f --no-pager 2>/dev/null | while IFS= read -r line; do
     # Only react to lines that look like a successful client connection.
     echo "$line" | grep -qiE 'client connected|user connected|accepted|authenticated|new session' || continue
 
@@ -5717,7 +5717,7 @@ show_banner() {
     if systemctl is-active --quiet dropbear; then
         svc_lbl+=("Dropbear:"); svc_val+=("${DROPBEAR_PORTS}")
     fi
-    if systemctl is-active --quiet openvpn; then
+    if systemctl is-active --quiet openvpn@server-tcp; then
         svc_lbl+=("OpenVPN:"); svc_val+=("${OPENVPN_TCP_PORT}, ${OPENVPN_UDP_PORT}")
     fi
     if systemctl is-active --quiet wg-quick@wg0; then
@@ -5726,10 +5726,10 @@ show_banner() {
     if systemctl is-active --quiet hysteria-server; then
         svc_lbl+=("Hysteria:"); svc_val+=("${HYSTERIA1_PORT}/${HYSTERIA2_PORT}")
     fi
-    if systemctl is-active --quiet shadowsocks-libev-server; then
+    if systemctl is-active --quiet shadowsocks-libev; then
         svc_lbl+=("ShadowSocks:"); svc_val+=("${SHADOWSOCKS_PORT}")
     fi
-    if systemctl is-active --quiet socks5; then
+    if systemctl is-active --quiet danted; then
         svc_lbl+=("Socks5:"); svc_val+=("${SOCKS5_PORT}")
     fi
     if systemctl is-active --quiet slowudp; then
@@ -5792,11 +5792,11 @@ protocol_menu() {
         local xui_status; if command -v x-ui &> /dev/null; then xui_status="${C_STATUS_A}(Installed)${C_RESET}"; else xui_status="${C_STATUS_I}(Not Installed)${C_RESET}"; fi
 
         local dropbear_status; if systemctl is-active --quiet dropbear 2>/dev/null; then dropbear_status="${C_STATUS_A}(Active)${C_RESET}"; else dropbear_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
-        local openvpn_status; if systemctl is-active --quiet openvpn 2>/dev/null; then openvpn_status="${C_STATUS_A}(Active)${C_RESET}"; else openvpn_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
+        local openvpn_status; if systemctl is-active --quiet openvpn@server-tcp 2>/dev/null; then openvpn_status="${C_STATUS_A}(Active)${C_RESET}"; else openvpn_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
         local wg_status; if systemctl is-active --quiet wg-quick@wg0 2>/dev/null; then wg_status="${C_STATUS_A}(Active)${C_RESET}"; else wg_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
         local hysteria_status; if systemctl is-active --quiet hysteria-server 2>/dev/null; then hysteria_status="${C_STATUS_A}(Active)${C_RESET}"; else hysteria_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
-        local ss_status; if systemctl is-active --quiet shadowsocks-libev-server 2>/dev/null; then ss_status="${C_STATUS_A}(Active)${C_RESET}"; else ss_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
-        local socks5_status; if systemctl is-active --quiet socks5 2>/dev/null; then socks5_status="${C_STATUS_A}(Active)${C_RESET}"; else socks5_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
+        local ss_status; if systemctl is-active --quiet shadowsocks-libev 2>/dev/null; then ss_status="${C_STATUS_A}(Active)${C_RESET}"; else ss_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
+        local socks5_status; if systemctl is-active --quiet danted 2>/dev/null; then socks5_status="${C_STATUS_A}(Active)${C_RESET}"; else socks5_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
         local slowudp_status; if systemctl is-active --quiet slowudp 2>/dev/null; then slowudp_status="${C_STATUS_A}(Active)${C_RESET}"; else slowudp_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
         local ohp_status; if systemctl is-active --quiet ohp 2>/dev/null; then ohp_status="${C_STATUS_A}(Active)${C_RESET}"; else ohp_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
         local squid_status; if systemctl is-active --quiet squid 2>/dev/null; then squid_status="${C_STATUS_A}(Active)${C_RESET}"; else squid_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
@@ -7708,9 +7708,26 @@ install_dropbear() {
     fi
     echo -e "\n${C_BLUE}📦 Installing Dropbear...${C_RESET}"
     ff_pkg_install dropbear >/dev/null 2>&1 || { echo -e "${C_RED}❌ Failed to install Dropbear.${C_RESET}"; return; }
-    sed -i 's/^NO_START=1/NO_START=0/' /etc/default/dropbear 2>/dev/null
-    sed -i "s/^DROPBEAR_PORT=22/DROPBEAR_PORT=109/" /etc/default/dropbear 2>/dev/null
+
     echo -e "\n${C_BLUE}🔧 Configuring Dropbear on ports ${DROPBEAR_PORTS}...${C_RESET}"
+    local db_args=""
+    IFS=',' read -ra _db_ports <<< "$DROPBEAR_PORTS"
+    for _p in "${_db_ports[@]}"; do
+        _p="${_p// /}"
+        db_args+=" -p ${_p}"
+        check_and_open_firewall_port "$_p" tcp
+    done
+
+    if [[ -f /etc/default/dropbear ]]; then
+        sed -i 's/^#\?\s*NO_START=.*/NO_START=0/' /etc/default/dropbear
+        if grep -q '^#\?\s*DROPBEAR_EXTRA_ARGS=' /etc/default/dropbear; then
+            sed -i "s|^#\?\s*DROPBEAR_EXTRA_ARGS=.*|DROPBEAR_EXTRA_ARGS=\"${db_args}\"|" /etc/default/dropbear
+        else
+            echo "DROPBEAR_EXTRA_ARGS=\"${db_args}\"" >> /etc/default/dropbear
+        fi
+        sed -i 's/^#\?\s*DROPBEAR_PORT=.*/DROPBEAR_PORT=22/' /etc/default/dropbear
+    fi
+
     systemctl enable dropbear 2>/dev/null
     systemctl restart dropbear 2>/dev/null
     echo -e "${C_GREEN}✅ Dropbear installed on ports ${DROPBEAR_PORTS}.${C_RESET}"
@@ -7719,6 +7736,8 @@ uninstall_dropbear() {
     echo -e "\n${C_BLUE}🗑️ Removing Dropbear...${C_RESET}"
     systemctl stop dropbear 2>/dev/null; systemctl disable dropbear 2>/dev/null
     ff_pkg_purge dropbear >/dev/null 2>&1
+    rm -f /etc/dropbear_banner 2>/dev/null
+    rm -f /etc/default/dropbear 2>/dev/null
     echo -e "${C_GREEN}✅ Dropbear removed.${C_RESET}"
 }
 
@@ -7726,12 +7745,18 @@ uninstall_dropbear() {
 install_openvpn() {
     clear; show_banner
     echo -e "${C_BOLD}${C_PURPLE}--- 🛡️ Install OpenVPN ---${C_RESET}"
-    if systemctl is-active --quiet openvpn 2>/dev/null; then
+    if systemctl is-active --quiet openvpn@server-tcp 2>/dev/null; then
         echo -e "\n${C_YELLOW}ℹ️ OpenVPN is already installed.${C_RESET}"
         return
     fi
     echo -e "\n${C_BLUE}📦 Installing OpenVPN packages...${C_RESET}"
     ff_pkg_install openvpn easy-rsa >/dev/null 2>&1 || { echo -e "${C_RED}❌ Failed to install packages.${C_RESET}"; return; }
+
+    echo -e "${C_BLUE}🔧 Enabling IP forwarding...${C_RESET}"
+    sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+    mkdir -p /etc/sysctl.d 2>/dev/null
+    echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/99-vpn-forward.conf
+
     check_and_open_firewall_port "$OPENVPN_TCP_PORT" tcp
     check_and_open_firewall_port "$OPENVPN_UDP_PORT" udp
     check_and_open_firewall_port "$OPENVPN_SDNS_PORT" udp
@@ -7889,6 +7914,12 @@ install_wireguard() {
     fi
     echo -e "\n${C_BLUE}📦 Installing WireGuard...${C_RESET}"
     ff_pkg_install wireguard wireguard-tools >/dev/null 2>&1 || { echo -e "${C_RED}❌ Failed to install WireGuard.${C_RESET}"; return; }
+
+    echo -e "${C_BLUE}🔧 Enabling IP forwarding...${C_RESET}"
+    sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+    mkdir -p /etc/sysctl.d 2>/dev/null
+    echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/99-vpn-forward.conf
+
     check_and_open_firewall_port "$WIREGUARD_PORT" udp
     mkdir -p "$EXPORTS_DIR" 2>/dev/null
 
@@ -7944,7 +7975,6 @@ install_hysteria() {
     esac
     ff_fetch_binary /usr/local/bin/hysteria "$url" || { echo -e "${C_RED}❌ Download failed.${C_RESET}"; return; }
     chmod +x /usr/local/bin/hysteria
-    check_and_open_firewall_port "$HYSTERIA1_PORT" udp
     check_and_open_firewall_port "$HYSTERIA2_PORT" udp
     mkdir -p /etc/hysteria "$EXPORTS_DIR" 2>/dev/null
 
@@ -8007,7 +8037,7 @@ uninstall_hysteria() {
 install_shadowsocks() {
     clear; show_banner
     echo -e "${C_BOLD}${C_PURPLE}--- 📡 Install ShadowSocks (Standalone) ---${C_RESET}"
-    if systemctl is-active --quiet shadowsocks-libev-server 2>/dev/null; then
+    if systemctl is-active --quiet shadowsocks-libev 2>/dev/null; then
         echo -e "\n${C_YELLOW}ℹ️ ShadowSocks is already installed.${C_RESET}"
         return
     fi
@@ -8039,7 +8069,7 @@ uninstall_shadowsocks() {
 install_socks5() {
     clear; show_banner
     echo -e "${C_BOLD}${C_PURPLE}--- 🧦 Install Socks5 Proxy ---${C_RESET}"
-    if systemctl is-active --quiet socks5 2>/dev/null; then
+    if systemctl is-active --quiet danted 2>/dev/null; then
         echo -e "\n${C_YELLOW}ℹ️ Socks5 proxy is already installed.${C_RESET}"
         return
     fi
@@ -8129,7 +8159,13 @@ install_ohp() {
         return
     fi
     echo -e "\n${C_BLUE}📦 Installing OHP...${C_RESET}"
-    local url="https://github.com/ophttp/ohp/releases/latest/download/ohp-linux-amd64"
+    local arch; arch=$(uname -m)
+    local url
+    case "$arch" in
+        x86_64)  url="https://github.com/ophttp/ohp/releases/latest/download/ohp-linux-amd64" ;;
+        aarch64) url="https://github.com/ophttp/ohp/releases/latest/download/ohp-linux-arm64" ;;
+        *) echo -e "${C_RED}❌ Unsupported arch.${C_RESET}"; return ;;
+    esac
     ff_fetch_binary /usr/local/bin/ohp "$url" 2>/dev/null || {
         echo -e "${C_YELLOW}⚠️ Binary download failed. Install manually.${C_RESET}"
         return
@@ -8170,7 +8206,9 @@ install_squid() {
     fi
     ff_pkg_install squid >/dev/null 2>&1 || { echo -e "${C_RED}❌ Failed.${C_RESET}"; return; }
     check_and_open_firewall_port "$SQUID_PORT" tcp
-    echo -e "${C_GREEN}✅ Squid installed. Edit /etc/squid/squid.conf to configure port ${SQUID_PORT}.${C_RESET}"
+    systemctl enable squid 2>/dev/null
+    systemctl restart squid 2>/dev/null
+    echo -e "${C_GREEN}✅ Squid installed and started on port ${SQUID_PORT}.${C_RESET}"
 }
 uninstall_squid() {
     echo -e "\n${C_BLUE}🗑️ Removing Squid...${C_RESET}"
@@ -8190,7 +8228,29 @@ install_stunnel() {
     ff_pkg_install stunnel4 >/dev/null 2>&1 || { echo -e "${C_RED}❌ Failed.${C_RESET}"; return; }
     check_and_open_firewall_port "$STUNNEL_PORT" tcp
     mkdir -p /etc/stunnel
-    echo -e "${C_GREEN}✅ Stunnel installed on port ${STUNNEL_PORT}. Edit /etc/stunnel/*.conf to configure.${C_RESET}"
+
+    if [[ -f "$SSL_CERT_FILE" ]]; then
+        local _st_cert="$SSL_CERT_FILE"
+    else
+        echo -e "${C_BLUE}🔐 Generating self-signed cert for Stunnel...${C_RESET}"
+        openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
+            -keyout /etc/stunnel/stunnel.pem -out /etc/stunnel/stunnel.pem \
+            -subj "/CN=VPS_superScript-stunnel" 2>/dev/null
+        local _st_cert="/etc/stunnel/stunnel.pem"
+    fi
+
+    cat > /etc/stunnel/stunnel.conf <<STCFG
+pid = /var/run/stunnel4/stunnel4.pid
+[ssh]
+accept = ${STUNNEL_PORT}
+connect = 127.0.0.1:22
+cert = ${_st_cert}
+STCFG
+
+    sed -i 's/^ENABLED=0/ENABLED=1/' /etc/default/stunnel4 2>/dev/null
+    systemctl enable stunnel4 2>/dev/null
+    systemctl restart stunnel4 2>/dev/null
+    echo -e "${C_GREEN}✅ Stunnel installed and started on port ${STUNNEL_PORT} (wrapping SSH).${C_RESET}"
 }
 uninstall_stunnel() {
     echo -e "\n${C_BLUE}🗑️ Removing Stunnel...${C_RESET}"
@@ -8208,7 +8268,13 @@ install_udp_request() {
         return
     fi
     echo -e "\n${C_BLUE}📦 Installing UDP Request...${C_RESET}"
-    local url="https://github.com/udprequest/udp-request/releases/latest/download/udp-request-linux-amd64"
+    local arch; arch=$(uname -m)
+    local url
+    case "$arch" in
+        x86_64)  url="https://github.com/udprequest/udp-request/releases/latest/download/udp-request-linux-amd64" ;;
+        aarch64) url="https://github.com/udprequest/udp-request/releases/latest/download/udp-request-linux-arm64" ;;
+        *) echo -e "${C_RED}❌ Unsupported arch.${C_RESET}"; return ;;
+    esac
     ff_fetch_binary /usr/local/bin/udp-request "$url" 2>/dev/null || {
         echo -e "${C_YELLOW}⚠️ Binary download failed. Install manually.${C_RESET}"
         return
@@ -8243,7 +8309,7 @@ uninstall_udp_request() {
 install_argo_tunnel() {
     clear; show_banner
     echo -e "${C_BOLD}${C_PURPLE}--- ☁️ Install Argo (Cloudflare) Tunnel ---${C_RESET}"
-    if systemctl is-active --quiet argo-tunnel 2>/dev/null; then
+    if command -v cloudflared &>/dev/null; then
         echo -e "\n${C_YELLOW}ℹ️ Argo Tunnel is already installed.${C_RESET}"
         return
     fi
@@ -8259,13 +8325,30 @@ install_argo_tunnel() {
     chmod +x /usr/local/bin/cloudflared
     check_and_open_firewall_port "$ARGO_TUNNEL_HTTP" tcp
     check_and_open_firewall_port "$ARGO_TUNNEL_HTTPS" tcp
-    echo -e "${C_GREEN}✅ Cloudflared installed. Run 'cloudflared tunnel login' to configure.${C_RESET}"
+
+    cat > /etc/systemd/system/argo-tunnel.service <<ARGOSVC
+[Unit]
+Description=Cloudflare Argo Tunnel
+After=network.target
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/cloudflared tunnel run
+Restart=on-failure
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+ARGOSVC
+    systemctl daemon-reload
+
+    echo -e "${C_GREEN}✅ Cloudflared installed. Run 'cloudflared tunnel login' to configure, then 'systemctl start argo-tunnel'.${C_RESET}"
     echo -e "${C_YELLOW}⚠️ Using ports ${ARGO_TUNNEL_HTTP}/${ARGO_TUNNEL_HTTPS} to avoid conflict with HAProxy (80/443) and Nginx (8880/8443).${C_RESET}"
 }
 uninstall_argo_tunnel() {
     echo -e "\n${C_BLUE}🗑️ Removing Argo Tunnel...${C_RESET}"
     systemctl stop argo-tunnel 2>/dev/null; systemctl disable argo-tunnel 2>/dev/null
-    rm -f /usr/local/bin/cloudflared
+    rm -f /usr/local/bin/cloudflared /etc/systemd/system/argo-tunnel.service
+    systemctl daemon-reload
     echo -e "${C_GREEN}✅ Argo Tunnel removed.${C_RESET}"
 }
 
@@ -8495,7 +8578,7 @@ on_off_service_menu() {
         echo -e "     ${C_DIM}Select a service to toggle ON or OFF${C_RESET}\n"
         local services=(
             "dropbear:Dropbear"
-            "openvpn:OpenVPN"
+            "openvpn@server-tcp:OpenVPN"
             "wg-quick@wg0:WireGuard"
             "hysteria-server:Hysteria"
             "shadowsocks-libev:ShadowSocks"
@@ -8534,9 +8617,16 @@ on_off_service_menu() {
             local target="${svc_names[$((togg-1))]}"
             if systemctl is-active --quiet "$target" 2>/dev/null; then
                 systemctl stop "$target" 2>/dev/null
+                if [[ "$target" == "openvpn@server-tcp" ]]; then
+                    systemctl stop openvpn@server-udp 2>/dev/null
+                    systemctl stop openvpn@server-sdns 2>/dev/null
+                fi
                 echo -e "\n${C_YELLOW}⏹️ Stopped $target${C_RESET}"
             else
                 systemctl start "$target" 2>/dev/null
+                if [[ "$target" == "openvpn@server-tcp" ]]; then
+                    systemctl start openvpn@server-udp 2>/dev/null
+                fi
                 echo -e "\n${C_GREEN}▶️ Started $target${C_RESET}"
             fi
             press_enter
@@ -8836,7 +8926,10 @@ port_manager_menu() {
                         systemctl try-restart zivpn 2>/dev/null
                         ZIVPN_LISTEN_PORT="$new_port" ;;
                     Dropbear)
-                        sed -i "s/^DROPBEAR_PORT=.*/DROPBEAR_PORT=$new_port/" /etc/default/dropbear 2>/dev/null
+                        local _db_args=""
+                        IFS=',' read -ra _db_pp <<< "$new_port"
+                        for _dbp in "${_db_pp[@]}"; do _dbp="${_dbp// /}"; _db_args+=" -p ${_dbp}"; done
+                        sed -i "s|^#\?\s*DROPBEAR_EXTRA_ARGS=.*|DROPBEAR_EXTRA_ARGS=\"${_db_args}\"|" /etc/default/dropbear 2>/dev/null
                         systemctl try-restart dropbear 2>/dev/null
                         DROPBEAR_PORTS="$new_port" ;;
                     OpenVPN)
