@@ -123,6 +123,9 @@ UDP_REQUEST_PORT="36713"
 ARGO_TUNNEL_HTTP="2052"
 ARGO_TUNNEL_HTTPS="2053"
 REST_API_PORT="9000"
+WS_SSH_INTERNAL_PORT="2082"
+WS_SSH_SCRIPT="/usr/local/bin/ws-ssh-proxy.py"
+WS_SSH_SERVICE="/etc/systemd/system/ws-ssh.service"
 
 # ── Service Info Database (for Service Info menu) ──
 SERVICE_INFO_DB=(
@@ -147,6 +150,7 @@ SERVICE_INFO_DB=(
   "UDP-Request:UDP request tunnel, configurable port. Default: 36713. Conflicts: UDP Custom if same port."
   "Argo-Tunnel:Cloudflare Tunnel - outbound-only reverse proxy via Cloudflare. Default: 2052, 2053. Conflicts: HAProxy/Nginx if set to 80/443/8880/8443."
   "Rest-API:RESTful API on port 9000 for programmatic user management. Default: 9000. Conflicts: none."
+  "WS-SSH:WebSocket SSH proxy — bridges WebSocket to SSH without FalconProxy. Accessible via 80/443 through HAProxy/Nginx. Conflicts: none."
 )
 
 # --- Repository / binary source -------------------------------------------
@@ -5753,6 +5757,9 @@ show_banner() {
     if [[ -f /etc/systemd/system/rest-api.service ]] && systemctl is-active --quiet rest-api; then
         svc_lbl+=("Rest API:"); svc_val+=("${REST_API_PORT}")
     fi
+    if systemctl is-active --quiet ws-ssh; then
+        svc_lbl+=("WS-SSH:"); svc_val+=("80, 443 (bridge:${WS_SSH_INTERNAL_PORT})")
+    fi
     
     local i total=${#svc_lbl[@]}
     for ((i=0; i<total; i+=2)); do
@@ -5803,6 +5810,7 @@ protocol_menu() {
         local stunnel_status; if systemctl is-active --quiet stunnel4 2>/dev/null; then stunnel_status="${C_STATUS_A}(Active)${C_RESET}"; else stunnel_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
         local udp_req_status; if systemctl is-active --quiet udp-request 2>/dev/null; then udp_req_status="${C_STATUS_A}(Active)${C_RESET}"; else udp_req_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
         local argo_status; if systemctl is-active --quiet argo-tunnel 2>/dev/null; then argo_status="${C_STATUS_A}(Active)${C_RESET}"; else argo_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
+        local ws_ssh_status; if systemctl is-active --quiet ws-ssh 2>/dev/null; then ws_ssh_status="${C_STATUS_A}(Active)${C_RESET}"; else ws_ssh_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
         
         echo -e "\n   ${C_TITLE}══════════════[ ${C_BOLD}🔌 PROTOCOL & PANEL MANAGEMENT ${C_RESET}${C_TITLE}]══════════════${C_RESET}"
         echo -e "     ${C_ACCENT}--- EXISTING PROTOCOLS ---${C_RESET}"
@@ -5848,6 +5856,8 @@ protocol_menu() {
         printf "     ${C_CHOICE}[41]${C_RESET} %-45s\n" "🗑️ Uninstall UDP Request"
         printf "     ${C_CHOICE}[42]${C_RESET} %-45s %s\n" "☁️ Install Argo Tunnel" "$argo_status"
         printf "     ${C_CHOICE}[43]${C_RESET} %-45s\n" "🗑️ Uninstall Argo Tunnel"
+        printf "     ${C_CHOICE}[44]${C_RESET} %-45s %s\n" "🌐 Install WS-SSH (80, 443)" "$ws_ssh_status"
+        printf "     ${C_CHOICE}[45]${C_RESET} %-45s\n" "🗑️ Uninstall WS-SSH"
         
         echo -e "     ${C_ACCENT}--- 💻 MANAGEMENT PANELS ---${C_RESET}"
         printf "     ${C_CHOICE}[16]${C_RESET} %-45s %s\n" "💻 Install X-UI / 3X-UI Panel" "$xui_status"
@@ -5883,6 +5893,7 @@ protocol_menu() {
             38) install_stunnel; press_enter ;; 39) uninstall_stunnel; press_enter ;;
             40) install_udp_request; press_enter ;; 41) uninstall_udp_request; press_enter ;;
             42) install_argo_tunnel; press_enter ;; 43) uninstall_argo_tunnel; press_enter ;;
+            44) install_ws_ssh; press_enter ;; 45) uninstall_ws_ssh; press_enter ;;
             0) return ;;
             *) invalid_option ;;
         esac
@@ -5991,6 +6002,7 @@ uninstall_script() {
     uninstall_stunnel 2>/dev/null
     uninstall_udp_request 2>/dev/null
     uninstall_argo_tunnel 2>/dev/null
+    uninstall_ws_ssh 2>/dev/null
     systemctl stop rest-api 2>/dev/null; systemctl disable rest-api 2>/dev/null
     echo -e "\n${C_BLUE}🗑️ Removing HWID lock enforcer...${C_RESET}"
     systemctl stop VPS_superScript-hwid-enforcer &>/dev/null
@@ -7741,6 +7753,160 @@ uninstall_dropbear() {
     echo -e "${C_GREEN}✅ Dropbear removed.${C_RESET}"
 }
 
+# ── WS-SSH (WebSocket SSH Proxy) ──────────────────────────
+install_ws_ssh() {
+    clear; show_banner
+    echo -e "${C_BOLD}${C_PURPLE}--- 🌐 Install WS-SSH (WebSocket SSH Proxy) ---${C_RESET}"
+    if systemctl is-active --quiet ws-ssh 2>/dev/null; then
+        echo -e "\n${C_YELLOW}ℹ️ WS-SSH is already installed and running.${C_RESET}"
+        return
+    fi
+    if ! command -v python3 &>/dev/null; then
+        echo -e "${C_RED}❌ Python3 is required but not found.${C_RESET}"
+        return
+    fi
+
+    echo -e "\n${C_BLUE}📦 Creating WebSocket SSH bridge...${C_RESET}"
+
+    cat > "$WS_SSH_SCRIPT" <<'WSEOF'
+#!/usr/bin/env python3
+import socket, select, threading, sys, hashlib, base64, os, signal
+
+SSH_HOST, SSH_PORT = "127.0.0.1", 22
+BUF = 65536
+
+def relay(a, b):
+    try:
+        while True:
+            r, _, _ = select.select([a, b], [], [], 60)
+            if not r:
+                break
+            for s in r:
+                d = s.recv(BUF)
+                if not d:
+                    return
+                (b if s is a else a).sendall(d)
+    except Exception:
+        pass
+    finally:
+        a.close()
+        b.close()
+
+def handle(client):
+    try:
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = client.recv(4096)
+            if not chunk:
+                client.close()
+                return
+            data += chunk
+
+        header_block = data.split(b"\r\n\r\n", 1)[0].decode("utf-8", errors="ignore")
+        headers = {}
+        lines = header_block.split("\r\n")
+        for line in lines[1:]:
+            if ":" in line:
+                k, v = line.split(":", 1)
+                headers[k.strip().lower()] = v.strip()
+
+        ssh = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        ssh.connect((SSH_HOST, SSH_PORT))
+
+        if "upgrade" in headers and "websocket" in headers.get("upgrade", "").lower():
+            key = headers.get("sec-websocket-key", "")
+            magic = "258EAFA5-E914-47DA-95CA-5AB5FE8286DD"
+            accept = base64.b64encode(hashlib.sha1((key + magic).encode()).digest()).decode()
+            resp = (
+                "HTTP/1.1 101 Switching Protocols\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                f"Sec-WebSocket-Accept: {accept}\r\n\r\n"
+            )
+            client.sendall(resp.encode())
+        elif lines[0].upper().startswith("CONNECT"):
+            client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+        else:
+            client.sendall(b"HTTP/1.1 200 OK\r\n\r\n")
+            leftover = data.split(b"\r\n\r\n", 1)[1]
+            if leftover:
+                ssh.sendall(leftover)
+
+        relay(client, ssh)
+    except Exception:
+        client.close()
+
+def main():
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 2082
+    signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("0.0.0.0", port))
+    srv.listen(128)
+    sys.stderr.write(f"[WS-SSH] Listening on :{port}\n")
+    while True:
+        c, _ = srv.accept()
+        threading.Thread(target=handle, args=(c,), daemon=True).start()
+
+if __name__ == "__main__":
+    main()
+WSEOF
+    chmod +x "$WS_SSH_SCRIPT"
+
+    cat > "$WS_SSH_SERVICE" <<WSSVC
+[Unit]
+Description=WebSocket SSH Proxy
+After=network.target
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/python3 ${WS_SSH_SCRIPT} ${WS_SSH_INTERNAL_PORT}
+Restart=always
+RestartSec=3
+[Install]
+WantedBy=multi-user.target
+WSSVC
+
+    systemctl daemon-reload
+    check_and_open_firewall_port "$WS_SSH_INTERNAL_PORT" tcp
+    systemctl enable ws-ssh 2>/dev/null
+    systemctl restart ws-ssh 2>/dev/null
+
+    echo -e "\n${C_GREEN}✅ WS-SSH installed.${C_RESET}"
+    echo -e "${C_CYAN}   Internal bridge port: ${WS_SSH_INTERNAL_PORT}${C_RESET}"
+    echo -e "${C_CYAN}   Access via HAProxy/Nginx: ports 80, 443 (path /${WS_SSH_INTERNAL_PORT}/)${C_RESET}"
+    echo -e "${C_CYAN}   Or direct: port ${WS_SSH_INTERNAL_PORT}${C_RESET}"
+    echo -e "${C_DIM}   Works with HTTP Injector, HA Tunnel, KPN Tunnel, etc.${C_RESET}"
+
+    if systemctl is-active --quiet nginx 2>/dev/null; then
+        _ws_ssh_update_nginx_backend
+    fi
+}
+uninstall_ws_ssh() {
+    echo -e "\n${C_BLUE}🗑️ Removing WS-SSH...${C_RESET}"
+    systemctl stop ws-ssh 2>/dev/null; systemctl disable ws-ssh 2>/dev/null
+    rm -f "$WS_SSH_SCRIPT" "$WS_SSH_SERVICE"
+    systemctl daemon-reload
+    if systemctl is-active --quiet nginx 2>/dev/null; then
+        _ws_ssh_update_nginx_backend
+    fi
+    echo -e "${C_GREEN}✅ WS-SSH removed.${C_RESET}"
+}
+
+# Update Nginx location / backend: prefer FalconProxy if running, else WS-SSH, else 8080 default
+_ws_ssh_update_nginx_backend() {
+    [[ -f "$NGINX_CONFIG_FILE" ]] || return 0
+    local backend_port="8080"
+    if systemctl is-active --quiet falconproxy 2>/dev/null; then
+        backend_port=$(grep -oP '^PORTS="\K[^"]*' "$FALCONPROXY_CONFIG_FILE" 2>/dev/null | cut -d',' -f1)
+        [[ -z "$backend_port" ]] && backend_port="8080"
+    elif systemctl is-active --quiet ws-ssh 2>/dev/null; then
+        backend_port="$WS_SSH_INTERNAL_PORT"
+    fi
+    sed -i "s|proxy_pass http://127.0.0.1:[0-9]*;|proxy_pass http://127.0.0.1:${backend_port};|" "$NGINX_CONFIG_FILE" 2>/dev/null
+    nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null
+}
+
 # ── OpenVPN ───────────────────────────────────────────────
 install_openvpn() {
     clear; show_banner
@@ -8596,6 +8762,7 @@ on_off_service_menu() {
             "falconproxy:FalconProxy"
             "nginx:Nginx"
             "rest-api:Rest API"
+            "ws-ssh:WS-SSH"
         )
         local idx=1
         local -a svc_names=()
@@ -8890,6 +9057,7 @@ port_manager_menu() {
             "UDP-Request:${UDP_REQUEST_PORT}"
             "Argo:${ARGO_TUNNEL_HTTP}, ${ARGO_TUNNEL_HTTPS}"
             "Rest-API:${REST_API_PORT}"
+            "WS-SSH:80, 443 (bridge:${WS_SSH_INTERNAL_PORT})"
         )
         local idx=1
         for entry in "${ports_list[@]}"; do
@@ -8986,6 +9154,11 @@ port_manager_menu() {
                         sed -i "s/PORT = .*/PORT = $new_port/" /usr/local/bin/VPS_superScript-api.py 2>/dev/null
                         systemctl try-restart rest-api 2>/dev/null
                         REST_API_PORT="$new_port" ;;
+                    WS-SSH)
+                        sed -i "s|${WS_SSH_SCRIPT} [0-9]*|${WS_SSH_SCRIPT} ${new_port}|" "$WS_SSH_SERVICE" 2>/dev/null
+                        systemctl daemon-reload; systemctl try-restart ws-ssh 2>/dev/null
+                        WS_SSH_INTERNAL_PORT="$new_port"
+                        _ws_ssh_update_nginx_backend ;;
                     *) echo -e "${C_YELLOW}Manual config change required for this service.${C_RESET}" ;;
                 esac
                 echo -e "${C_GREEN}✅ Port updated and service restarted for ${svc_name}.${C_RESET}"
