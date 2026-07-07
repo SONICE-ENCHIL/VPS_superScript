@@ -126,6 +126,7 @@ REST_API_PORT="9000"
 WS_SSH_INTERNAL_PORT="2082"
 WS_SSH_SCRIPT="/usr/local/bin/ws-ssh-proxy.py"
 WS_SSH_SERVICE="/etc/systemd/system/ws-ssh.service"
+WS_SSH_CONFIG_FILE="$DB_DIR/ws_ssh_config.conf"
 
 # ── Service Info Database (for Service Info menu) ──
 SERVICE_INFO_DB=(
@@ -5758,7 +5759,8 @@ show_banner() {
         svc_lbl+=("Rest API:"); svc_val+=("${REST_API_PORT}")
     fi
     if systemctl is-active --quiet ws-ssh; then
-        svc_lbl+=("WS-SSH:"); svc_val+=("80, 443 (bridge:${WS_SSH_INTERNAL_PORT})")
+        local ws_resp=$(grep -oP '^RESPONSE="\K[^"]*' "$WS_SSH_CONFIG_FILE" 2>/dev/null || echo "101")
+        svc_lbl+=("WS-SSH:"); svc_val+=("${WS_SSH_INTERNAL_PORT} [${ws_resp}]")
     fi
     
     local i total=${#svc_lbl[@]}
@@ -5810,7 +5812,7 @@ protocol_menu() {
         local stunnel_status; if systemctl is-active --quiet stunnel4 2>/dev/null; then stunnel_status="${C_STATUS_A}(Active)${C_RESET}"; else stunnel_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
         local udp_req_status; if systemctl is-active --quiet udp-request 2>/dev/null; then udp_req_status="${C_STATUS_A}(Active)${C_RESET}"; else udp_req_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
         local argo_status; if systemctl is-active --quiet argo-tunnel 2>/dev/null; then argo_status="${C_STATUS_A}(Active)${C_RESET}"; else argo_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
-        local ws_ssh_status; if systemctl is-active --quiet ws-ssh 2>/dev/null; then ws_ssh_status="${C_STATUS_A}(Active)${C_RESET}"; else ws_ssh_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
+        local ws_ssh_status; if systemctl is-active --quiet ws-ssh 2>/dev/null; then local _wr=$(grep -oP '^RESPONSE="\K[^"]*' "$WS_SSH_CONFIG_FILE" 2>/dev/null || echo "101"); ws_ssh_status="${C_STATUS_A}(Active - ${_wr})${C_RESET}"; else ws_ssh_status="${C_STATUS_I}(Inactive)${C_RESET}"; fi
         
         echo -e "\n   ${C_TITLE}══════════════[ ${C_BOLD}🔌 PROTOCOL & PANEL MANAGEMENT ${C_RESET}${C_TITLE}]══════════════${C_RESET}"
         echo -e "     ${C_ACCENT}--- EXISTING PROTOCOLS ---${C_RESET}"
@@ -7766,6 +7768,25 @@ install_ws_ssh() {
         return
     fi
 
+    local ws_response
+    echo -e "\n${C_CYAN}Choose the HTTP response status for the tunnel handshake:${C_RESET}"
+    echo -e "  ${C_GREEN}[1]${C_RESET} HTTP/1.1 101 Switching Protocols  ${C_DIM}(WebSocket standard)${C_RESET}"
+    echo -e "  ${C_GREEN}[2]${C_RESET} HTTP/1.1 200 OK  ${C_DIM}(works on most carriers)${C_RESET}"
+    echo -e "  ${C_GREEN}[3]${C_RESET} HTTP/1.1 200 Connection Established  ${C_DIM}(CONNECT style)${C_RESET}"
+    echo -e "  ${C_GREEN}[4]${C_RESET} Custom"
+    local resp_choice
+    read -p "👉 Select response [1]: " resp_choice
+    resp_choice=${resp_choice:-1}
+    case "$resp_choice" in
+        1) ws_response="HTTP/1.1 101 Switching Protocols" ;;
+        2) ws_response="HTTP/1.1 200 OK" ;;
+        3) ws_response="HTTP/1.1 200 Connection Established" ;;
+        4) read -p "👉 Enter custom response (e.g. HTTP/1.1 200 Bienvenido): " ws_response
+           [[ -z "$ws_response" ]] && ws_response="HTTP/1.1 101 Switching Protocols" ;;
+        *) ws_response="HTTP/1.1 101 Switching Protocols" ;;
+    esac
+    echo -e "   ${C_GREEN}Response:${C_RESET} $ws_response"
+
     echo -e "\n${C_BLUE}📦 Creating WebSocket SSH bridge...${C_RESET}"
 
     cat > "$WS_SSH_SCRIPT" <<'WSEOF'
@@ -7774,6 +7795,21 @@ import socket, select, threading, sys, hashlib, base64, os, signal
 
 SSH_HOST, SSH_PORT = "127.0.0.1", 22
 BUF = 65536
+CONF = "/etc/VPS_superScript/ws_ssh_config.conf"
+
+def load_response():
+    resp = "HTTP/1.1 101 Switching Protocols"
+    try:
+        with open(CONF) as f:
+            for line in f:
+                if line.startswith("RESPONSE="):
+                    resp = line.strip().split("=", 1)[1].strip('"').strip("'")
+                    break
+    except FileNotFoundError:
+        pass
+    return resp
+
+CUSTOM_RESPONSE = load_response()
 
 def relay(a, b):
     try:
@@ -7817,17 +7853,20 @@ def handle(client):
             key = headers.get("sec-websocket-key", "")
             magic = "258EAFA5-E914-47DA-95CA-5AB5FE8286DD"
             accept = base64.b64encode(hashlib.sha1((key + magic).encode()).digest()).decode()
-            resp = (
-                "HTTP/1.1 101 Switching Protocols\r\n"
-                "Upgrade: websocket\r\n"
-                "Connection: Upgrade\r\n"
-                f"Sec-WebSocket-Accept: {accept}\r\n\r\n"
-            )
+            if "101" in CUSTOM_RESPONSE:
+                resp = (
+                    f"{CUSTOM_RESPONSE}\r\n"
+                    "Upgrade: websocket\r\n"
+                    "Connection: Upgrade\r\n"
+                    f"Sec-WebSocket-Accept: {accept}\r\n\r\n"
+                )
+            else:
+                resp = f"{CUSTOM_RESPONSE}\r\n\r\n"
             client.sendall(resp.encode())
         elif lines[0].upper().startswith("CONNECT"):
-            client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            client.sendall(f"{CUSTOM_RESPONSE}\r\n\r\n".encode())
         else:
-            client.sendall(b"HTTP/1.1 200 OK\r\n\r\n")
+            client.sendall(f"{CUSTOM_RESPONSE}\r\n\r\n".encode())
             leftover = data.split(b"\r\n\r\n", 1)[1]
             if leftover:
                 ssh.sendall(leftover)
@@ -7843,7 +7882,7 @@ def main():
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("0.0.0.0", port))
     srv.listen(128)
-    sys.stderr.write(f"[WS-SSH] Listening on :{port}\n")
+    sys.stderr.write(f"[WS-SSH] Listening on :{port} | Response: {CUSTOM_RESPONSE}\n")
     while True:
         c, _ = srv.accept()
         threading.Thread(target=handle, args=(c,), daemon=True).start()
@@ -7867,6 +7906,11 @@ RestartSec=3
 WantedBy=multi-user.target
 WSSVC
 
+    cat > "$WS_SSH_CONFIG_FILE" <<WSCFG
+PORTS="${WS_SSH_INTERNAL_PORT}"
+RESPONSE="${ws_response}"
+WSCFG
+
     systemctl daemon-reload
     check_and_open_firewall_port "$WS_SSH_INTERNAL_PORT" tcp
     systemctl enable ws-ssh 2>/dev/null
@@ -7874,6 +7918,7 @@ WSSVC
 
     echo -e "\n${C_GREEN}✅ WS-SSH installed.${C_RESET}"
     echo -e "${C_CYAN}   Internal bridge port: ${WS_SSH_INTERNAL_PORT}${C_RESET}"
+    echo -e "${C_CYAN}   HTTP Response: ${ws_response}${C_RESET}"
     echo -e "${C_CYAN}   Access via HAProxy/Nginx: ports 80, 443 (path /${WS_SSH_INTERNAL_PORT}/)${C_RESET}"
     echo -e "${C_CYAN}   Or direct: port ${WS_SSH_INTERNAL_PORT}${C_RESET}"
     echo -e "${C_DIM}   Works with HTTP Injector, HA Tunnel, KPN Tunnel, etc.${C_RESET}"
@@ -7885,7 +7930,7 @@ WSSVC
 uninstall_ws_ssh() {
     echo -e "\n${C_BLUE}🗑️ Removing WS-SSH...${C_RESET}"
     systemctl stop ws-ssh 2>/dev/null; systemctl disable ws-ssh 2>/dev/null
-    rm -f "$WS_SSH_SCRIPT" "$WS_SSH_SERVICE"
+    rm -f "$WS_SSH_SCRIPT" "$WS_SSH_SERVICE" "$WS_SSH_CONFIG_FILE"
     systemctl daemon-reload
     if systemctl is-active --quiet nginx 2>/dev/null; then
         _ws_ssh_update_nginx_backend
@@ -9057,7 +9102,7 @@ port_manager_menu() {
             "UDP-Request:${UDP_REQUEST_PORT}"
             "Argo:${ARGO_TUNNEL_HTTP}, ${ARGO_TUNNEL_HTTPS}"
             "Rest-API:${REST_API_PORT}"
-            "WS-SSH:80, 443 (bridge:${WS_SSH_INTERNAL_PORT})"
+            "WS-SSH:80, 443 (bridge:${WS_SSH_INTERNAL_PORT}) [$(grep -oP '^RESPONSE="\K[^"]*' "$WS_SSH_CONFIG_FILE" 2>/dev/null || echo 'HTTP/1.1 101 Switching Protocols')]"
         )
         local idx=1
         for entry in "${ports_list[@]}"; do
@@ -9156,8 +9201,31 @@ port_manager_menu() {
                         REST_API_PORT="$new_port" ;;
                     WS-SSH)
                         sed -i "s|${WS_SSH_SCRIPT} [0-9]*|${WS_SSH_SCRIPT} ${new_port}|" "$WS_SSH_SERVICE" 2>/dev/null
-                        systemctl daemon-reload; systemctl try-restart ws-ssh 2>/dev/null
+                        sed -i "s|^PORTS=.*|PORTS=\"${new_port}\"|" "$WS_SSH_CONFIG_FILE" 2>/dev/null
                         WS_SSH_INTERNAL_PORT="$new_port"
+                        echo -e "\n${C_CYAN}Change HTTP response status too?${C_RESET}"
+                        echo -e "  ${C_GREEN}[1]${C_RESET} HTTP/1.1 101 Switching Protocols"
+                        echo -e "  ${C_GREEN}[2]${C_RESET} HTTP/1.1 200 OK"
+                        echo -e "  ${C_GREEN}[3]${C_RESET} HTTP/1.1 200 Connection Established"
+                        echo -e "  ${C_GREEN}[4]${C_RESET} Custom"
+                        echo -e "  ${C_GREEN}[0]${C_RESET} Keep current"
+                        local ws_resp_choice
+                        read -p "👉 Select [0]: " ws_resp_choice
+                        ws_resp_choice=${ws_resp_choice:-0}
+                        if [[ "$ws_resp_choice" != "0" ]]; then
+                            local new_resp=""
+                            case "$ws_resp_choice" in
+                                1) new_resp="HTTP/1.1 101 Switching Protocols" ;;
+                                2) new_resp="HTTP/1.1 200 OK" ;;
+                                3) new_resp="HTTP/1.1 200 Connection Established" ;;
+                                4) read -p "👉 Enter custom response: " new_resp ;;
+                            esac
+                            if [[ -n "$new_resp" ]]; then
+                                sed -i "s|^RESPONSE=.*|RESPONSE=\"${new_resp}\"|" "$WS_SSH_CONFIG_FILE" 2>/dev/null
+                                echo -e "${C_GREEN}   Response set to: ${new_resp}${C_RESET}"
+                            fi
+                        fi
+                        systemctl daemon-reload; systemctl try-restart ws-ssh 2>/dev/null
                         _ws_ssh_update_nginx_backend ;;
                     *) echo -e "${C_YELLOW}Manual config change required for this service.${C_RESET}" ;;
                 esac
